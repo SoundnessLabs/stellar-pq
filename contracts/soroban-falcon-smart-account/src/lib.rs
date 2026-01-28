@@ -3,17 +3,7 @@
 //! Falcon-512 Smart Account for Soroban.
 //!
 //! A post-quantum secure smart account implementing `CustomAccountInterface`
-//! with embedded Falcon-512 signature verification. This contract uses the
-//! Falcon lattice-based signature scheme, a NIST-standardized post-quantum
-//! cryptographic algorithm.
-//!
-//! # Features
-//!
-//! - **Post-Quantum Security**: Uses Falcon-512 (NIST Level I security)
-//! - **Embedded Verification**: No external contract calls needed
-//! - **Soroban Smart Account**: Implements `CustomAccountInterface`
-//!
-//! # Usage
+//! with embedded Falcon-512 signature verification.
 //!
 //! The contract is initialized at deployment with a Falcon public key via the
 //! constructor. All subsequent transactions are authenticated using Falcon
@@ -61,9 +51,6 @@ pub struct FalconSmartAccount;
 impl FalconSmartAccount {
     /// Constructor - initializes the smart account with a Falcon-512 public key.
     ///
-    /// This function is called automatically when the contract is deployed.
-    /// The public key must be exactly 897 bytes (Falcon-512 format).
-    ///
     /// # Arguments
     /// * `falcon_pubkey` - The 897-byte Falcon-512 public key
     ///
@@ -98,10 +85,6 @@ impl CustomAccountInterface for FalconSmartAccount {
 
     /// Verify authorization using Falcon-512 post-quantum signature.
     ///
-    /// This function is called by the Soroban runtime to authenticate
-    /// transactions. It verifies that the provided signature is a valid
-    /// Falcon-512 signature over the transaction payload.
-    ///
     /// # Arguments
     /// * `signature_payload` - The 32-byte hash of the transaction to verify
     /// * `signature` - The Falcon signature (variable size, 42-700 bytes)
@@ -131,7 +114,6 @@ impl CustomAccountInterface for FalconSmartAccount {
             return Err(Error::InvalidSignatureSize);
         }
 
-        // Convert Soroban types to byte slices for verification
         let mut pk_bytes = [0u8; FALCON_512_PUBKEY_SIZE];
         for i in 0..FALCON_512_PUBKEY_SIZE {
             pk_bytes[i] = pubkey.get(i as u32).unwrap();
@@ -143,10 +125,8 @@ impl CustomAccountInterface for FalconSmartAccount {
             sig_bytes[i] = signature.get(i as u32).unwrap();
         }
 
-        // The message is the 32-byte signature payload
         let payload_array = signature_payload.to_array();
 
-        // Verify the Falcon-512 signature directly (no cross-contract call)
         let is_valid = FalconVerifier::verify_512(
             &pk_bytes,
             payload_array.as_slice(),
@@ -170,16 +150,13 @@ mod test {
     fn test_constructor_and_get_pubkey() {
         let env = Env::default();
 
-        // Create a valid-sized public key (897 bytes with header 0x09)
         let mut pubkey_data = [0u8; 897];
         pubkey_data[0] = 9; // Falcon-512 header
         let pubkey = Bytes::from_array(&env, &pubkey_data);
 
-        // Deploy with constructor
         let contract_id = env.register(FalconSmartAccount, (&pubkey,));
         let client = FalconSmartAccountClient::new(&env, &contract_id);
 
-        // Verify public key is stored
         assert_eq!(client.get_pubkey(), pubkey);
     }
 
@@ -188,10 +165,8 @@ mod test {
     fn test_constructor_invalid_pubkey_size() {
         let env = Env::default();
 
-        // Create an invalid-sized public key
         let bad_pubkey = Bytes::from_array(&env, &[0u8; 100]);
 
-        // This should panic
         let _contract_id = env.register(FalconSmartAccount, (&bad_pubkey,));
     }
 
@@ -199,20 +174,16 @@ mod test {
     fn test_falcon_verification_integration() {
         let env = Env::default();
 
-        // Test public key from the verifier test suite
         let pubkey_hex = "0902c671f64d92df6c446a63f5061d73fab61be667e74db66752251102a105922a6fe56a7b3a48196bafc22de2275600dfd8b4149842bf0a5f3b7df4e1f6608f5394aae63e918a7bc492426a62e64d1873fb72c020a3c6be3a9295bc29aaf1c351267c6b00ffc2aa003f64fa9133628b2996b4327b7ee6366b9acb4067e30715fcf68273e04880a453eb468eff0a8d563af3235c6cae44984e8ed8911a34222ed6ec3274f8c491893a9f74ab6b1d67daa0083eb666c098acd4745aa208362a8e14b906437c2cc1ca044a5b903724c9066cd662a622cc38165a4d91322e193c48d12b5e20977bdb4816d6c1aa6a8a4118705029de6fd8723d3ca408ea0c296ceba31e903fbbc9dd60b0c1ca74a1a995d3cf449518815ab29f227d257491f758630484e3a6e36c83008069e538e3e65272f0a5440d8e6998e516e1a5390045b986c24975567c8ce8eae5b29916797516c04f69085a0112e9295b8d96e878410e12507ff9ba012c1f352a84be660a467a95321c8947b07440d58ac215b9cc2ee3d2e5c5af1e9044aed41e94305390c5110c27e5ee3a620c898f90671911e58f75c1085551618b5b4443e3e3527955357007d8696bb59e0d625f248f513de19916a093b43ef00b8d8211a3801874c9687b792e9588a59622b748ae5adc1ff98d0040506cd7c720e64123631bdd70628fa2534bf1094d92b82f2d5fb586d715dee362ac6cd33268a3249669c853fde1643222968b072d07be36764962d3c6a0550038bce88219585357616fb63e701f923ae986247850c7c5ad74bd3e8cf342623cabb8e467fe55a1103975f9af1235995ca30bfe8ea9af0619a2995a283e5cd49bae9a9737201d152d253f50e526d55c59ae8675eeca051bbf44f4c9e530cdfca2c0b192cf8f779a85de921e06a48b71ac1170af6c50c16d3328149c5a682ceb18a01f1de6207319d54a5f205ff82d8ae5536a924721e68c83b82d47dbc0854db1d392e055e2702e8a9401e200616d43aa8c25075712b1f0274f097cf51423685a051d35afb9a9d3217e365e95d95bff5a31e8320bc423bc5052d1ec04739005090a8e6f95b53014129aa30b937cf157c6d0bfa77263e3a2d435954e30f790a4ca062e7d17aa2d52a5a4aec83108c12e24fcf97a9119554eadf26b5447b1d0d7e0484b58122a1b68aa15bd3e5db8927b4240785966f5cba8784b752d723a86c13c005ec57fe22bb18afd43d1093d232ac8b09f920d2a8cbec54e56f93edd6dd235a1ef";
         let pubkey_bytes = hex::decode(pubkey_hex).unwrap();
         let pubkey = Bytes::from_slice(&env, &pubkey_bytes);
 
-        // Deploy with constructor
         let contract_id = env.register(FalconSmartAccount, (&pubkey,));
         let client = FalconSmartAccountClient::new(&env, &contract_id);
 
-        // Verify the public key is stored correctly
         let stored_pubkey = client.get_pubkey();
         assert_eq!(stored_pubkey.len(), 897);
 
-        // Verify we can decode the public key
         let mut h = [0u16; FALCON_512_N];
         let mut pk_bytes = [0u8; FALCON_512_PUBKEY_SIZE];
         for i in 0..FALCON_512_PUBKEY_SIZE {
@@ -223,7 +194,6 @@ mod test {
 
     #[test]
     fn test_direct_verification() {
-        // Test verification directly without contract deployment
         let pubkey_hex = "0902c671f64d92df6c446a63f5061d73fab61be667e74db66752251102a105922a6fe56a7b3a48196bafc22de2275600dfd8b4149842bf0a5f3b7df4e1f6608f5394aae63e918a7bc492426a62e64d1873fb72c020a3c6be3a9295bc29aaf1c351267c6b00ffc2aa003f64fa9133628b2996b4327b7ee6366b9acb4067e30715fcf68273e04880a453eb468eff0a8d563af3235c6cae44984e8ed8911a34222ed6ec3274f8c491893a9f74ab6b1d67daa0083eb666c098acd4745aa208362a8e14b906437c2cc1ca044a5b903724c9066cd662a622cc38165a4d91322e193c48d12b5e20977bdb4816d6c1aa6a8a4118705029de6fd8723d3ca408ea0c296ceba31e903fbbc9dd60b0c1ca74a1a995d3cf449518815ab29f227d257491f758630484e3a6e36c83008069e538e3e65272f0a5440d8e6998e516e1a5390045b986c24975567c8ce8eae5b29916797516c04f69085a0112e9295b8d96e878410e12507ff9ba012c1f352a84be660a467a95321c8947b07440d58ac215b9cc2ee3d2e5c5af1e9044aed41e94305390c5110c27e5ee3a620c898f90671911e58f75c1085551618b5b4443e3e3527955357007d8696bb59e0d625f248f513de19916a093b43ef00b8d8211a3801874c9687b792e9588a59622b748ae5adc1ff98d0040506cd7c720e64123631bdd70628fa2534bf1094d92b82f2d5fb586d715dee362ac6cd33268a3249669c853fde1643222968b072d07be36764962d3c6a0550038bce88219585357616fb63e701f923ae986247850c7c5ad74bd3e8cf342623cabb8e467fe55a1103975f9af1235995ca30bfe8ea9af0619a2995a283e5cd49bae9a9737201d152d253f50e526d55c59ae8675eeca051bbf44f4c9e530cdfca2c0b192cf8f779a85de921e06a48b71ac1170af6c50c16d3328149c5a682ceb18a01f1de6207319d54a5f205ff82d8ae5536a924721e68c83b82d47dbc0854db1d392e055e2702e8a9401e200616d43aa8c25075712b1f0274f097cf51423685a051d35afb9a9d3217e365e95d95bff5a31e8320bc423bc5052d1ec04739005090a8e6f95b53014129aa30b937cf157c6d0bfa77263e3a2d435954e30f790a4ca062e7d17aa2d52a5a4aec83108c12e24fcf97a9119554eadf26b5447b1d0d7e0484b58122a1b68aa15bd3e5db8927b4240785966f5cba8784b752d723a86c13c005ec57fe22bb18afd43d1093d232ac8b09f920d2a8cbec54e56f93edd6dd235a1ef";
         let pubkey = hex::decode(pubkey_hex).unwrap();
 
@@ -237,7 +207,6 @@ mod test {
             "Direct verification should pass"
         );
 
-        // Wrong message should fail
         assert!(
             !FalconVerifier::verify_512(&pubkey, b"Wrong message", &signature),
             "Wrong message should fail verification"

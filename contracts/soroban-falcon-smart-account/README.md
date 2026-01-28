@@ -2,13 +2,6 @@
 
 A post-quantum secure smart account implementing Soroban's `CustomAccountInterface` with **embedded Falcon-512 signature verification**. This contract enables quantum-resistant transaction authentication on Stellar.
 
-## Features
-
-- **Post-Quantum Security**: Uses Falcon-512 (NIST Level I security)
-- **Embedded Verification**: No external contract calls - verification logic is built-in
-- **Soroban Smart Account**: Full `CustomAccountInterface` implementation
-- **NIST Validated**: Tested against official NIST KAT vectors
-
 ## Contract Interface
 
 ### Constructor
@@ -104,17 +97,6 @@ let final_tx = Transaction {
 let signed_envelope = fee_payer.sign(final_tx);
 submit(signed_envelope);
 ```
-
-## Architecture
-
-This contract embeds the complete Falcon-512 verification algorithm:
-
-- **NTT (Number Theoretic Transform)**: Efficient polynomial multiplication in Z_q[X]/(X^n + 1)
-- **Hash-to-Point**: SHAKE256-based challenge generation with rejection sampling
-- **Signature Decoding**: Supports compressed, padded, and CT signature formats
-- **Norm Verification**: Constant-time L2 norm bound checking
-
-The verification is performed entirely within the contract - no cross-contract calls are needed.
 
 ## Live Demo
 
