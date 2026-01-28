@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="blueGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2400FF"/>
+      <stop offset="100%" style="stop-color:#4D33FF"/>
+    </linearGradient>
+  </defs>
+  <!-- Stylized S with interlocking loops -->
+  <g fill="url(#blueGrad)">
+    <!-- Top loop -->
+    <path d="M50 5 C25 5 10 20 10 35 C10 50 25 60 50 60 C65 60 75 55 75 45 C75 35 65 30 50 30 C35 30 30 35 30 40 C30 45 35 48 50 48 C60 48 65 45 65 40"
+          fill="none" stroke="url(#blueGrad)" stroke-width="12" stroke-linecap="round"/>
+    <!-- Bottom loop (mirrored) -->
+    <path d="M50 95 C75 95 90 80 90 65 C90 50 75 40 50 40 C35 40 25 45 25 55 C25 65 35 70 50 70 C65 70 70 65 70 60 C70 55 65 52 50 52 C40 52 35 55 35 60"
+          fill="none" stroke="url(#blueGrad)" stroke-width="12" stroke-linecap="round"/>
+  </g>
+</svg>

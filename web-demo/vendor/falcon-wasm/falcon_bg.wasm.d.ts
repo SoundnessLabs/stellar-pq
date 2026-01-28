@@ -1,0 +1,34 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __wbg_falcon512keypair_free: (a: number, b: number) => void;
+export const falcon512keypair_new: (a: number, b: number) => [number, number, number];
+export const falcon512keypair_publicKeyBytes: (a: number) => [number, number];
+export const falcon512keypair_privateKeyBytes: (a: number) => [number, number];
+export const falcon512keypair_sign: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const falcon512keypair_signPadded: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const falcon512keypair_verify: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+export const __wbg_falcon512publickey_free: (a: number, b: number) => void;
+export const falcon512publickey_new: (a: number, b: number) => [number, number, number];
+export const falcon512publickey_verify: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+export const falcon512publickey_toBytes: (a: number) => [number, number];
+export const __wbg_falcon1024keypair_free: (a: number, b: number) => void;
+export const falcon1024keypair_new: (a: number, b: number) => [number, number, number];
+export const falcon1024keypair_publicKeyBytes: (a: number) => [number, number];
+export const falcon1024keypair_privateKeyBytes: (a: number) => [number, number];
+export const falcon1024keypair_sign: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const falcon1024keypair_signPadded: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const falcon1024keypair_verify: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+export const __wbg_falcon1024publickey_free: (a: number, b: number) => void;
+export const falcon1024publickey_new: (a: number, b: number) => [number, number, number];
+export const falcon1024publickey_verify: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+export const falcon1024publickey_toBytes: (a: number) => [number, number];
+export const falcon512PublicKeySize: () => number;
+export const falcon512PrivateKeySize: () => number;
+export const falcon1024PublicKeySize: () => number;
+export const falcon1024PrivateKeySize: () => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_start: () => void;
