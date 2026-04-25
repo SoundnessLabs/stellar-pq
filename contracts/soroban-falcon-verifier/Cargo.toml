@@ -13,7 +13,7 @@ testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
 soroban-sdk = "23.4.0"
-sha3 = { version = "0.10.8", default-features = false }
+falcon-512-core = { path = "../falcon-512-core" }
 
 [dev-dependencies]
 soroban-sdk = { version = "23.4.0", features = ["testutils"] }

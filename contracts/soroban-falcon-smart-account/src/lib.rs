@@ -16,24 +16,15 @@ use soroban_sdk::{
     symbol_short, Bytes, Env, Symbol, Vec,
 };
 
-mod ntt;
-pub mod verify;
-
-pub use verify::FalconVerifier;
+pub use falcon_512_core::verify;
+pub use falcon_512_core::FalconVerifier;
+pub use falcon_512_core::{
+    FALCON_512_LOGN, FALCON_512_N, FALCON_512_PUBKEY_SIZE, FALCON_SIG_MAX_SIZE,
+    FALCON_SIG_MIN_SIZE, L2_BOUND_512, Q,
+};
 
 // Storage key for the Falcon public key
 const FALCON_PUBKEY_KEY: Symbol = symbol_short!("F_PUBKEY");
-
-// Falcon-512 constants
-pub const FALCON_512_LOGN: u32 = 9;
-pub const FALCON_512_N: usize = 512;
-pub const FALCON_512_PUBKEY_SIZE: usize = 897;
-pub const FALCON_SIG_MIN_SIZE: u32 = 42;
-pub const FALCON_SIG_MAX_SIZE: u32 = 700;
-/// The prime modulus for Falcon ring arithmetic
-pub const Q: u32 = 12289;
-/// Squared L2 norm bound for Falcon-512 signatures
-pub const L2_BOUND_512: u32 = 34034726;
 
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -1,12 +1,14 @@
-//! Number Theoretic Transform (NTT) for Falcon-512 Verification
+//! Number Theoretic Transform (NTT) for Falcon-512 Verification.
 //!
+//! Twiddle tables and Montgomery constants match the Falcon reference
+//! implementation (PQClean `crypto_sign/falcon-512/clean`).
 use crate::{FALCON_512_N, Q};
 
-/// Montgomery reduction constant
+/// Montgomery reduction constant: `-Q^{-1} mod 2^16`.
 const Q0I: u32 = 12287;
-/// Montgomery radix
+/// Montgomery radix in field form: `2^16 mod Q`.
 const R: u32 = 4091;
-/// Montgomery conversion constant
+/// `2^32 mod Q`, used to convert from natural form to Montgomery form.
 const R2: u32 = 10952;
 
 /// Forward NTT twiddle factors in Montgomery form.
