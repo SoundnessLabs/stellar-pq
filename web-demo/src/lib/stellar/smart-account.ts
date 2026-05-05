@@ -14,6 +14,30 @@ import {
   getExplorerUrl,
 } from './config'
 
+/**
+ * Domain-separation tag that the Falcon smart-account prepends to the
+ * Soroban-provided `signature_payload` before running Falcon verification.
+ * Keep this byte-for-byte in sync with `DOMAIN_SEPARATOR` in
+ * contracts/soroban-falcon-smart-account/src/lib.rs — changing either side
+ * silently breaks all auth.
+ */
+const SMART_ACCOUNT_DOMAIN_SEPARATOR = new TextEncoder().encode(
+  'soroban-falcon-smart-account-v1',
+)
+
+/**
+ * Construct the byte string the smart account actually verifies Falcon against:
+ * `DOMAIN_SEPARATOR || signature_payload`.
+ */
+function buildSignedMessage(payloadHash: Uint8Array): Uint8Array {
+  const out = new Uint8Array(
+    SMART_ACCOUNT_DOMAIN_SEPARATOR.length + payloadHash.length,
+  )
+  out.set(SMART_ACCOUNT_DOMAIN_SEPARATOR, 0)
+  out.set(payloadHash, SMART_ACCOUNT_DOMAIN_SEPARATOR.length)
+  return out
+}
+
 export interface DeployResult {
   success: boolean
   contractId?: string
@@ -685,13 +709,17 @@ export async function transferFromSmartAccount(
 
     const preimageXdr = preimage.toXDR()
     const payloadHash = StellarSdk.hash(preimageXdr)
+    // The smart account verifies Falcon against DOMAIN_SEPARATOR || payloadHash.
+    // This must match the on-chain contract; otherwise every transaction fails.
+    const signedMessage = buildSignedMessage(new Uint8Array(payloadHash))
 
     console.log('Preimage XDR length:', preimageXdr.length)
     console.log('Payload hash:', Buffer.from(payloadHash).toString('hex'))
+    console.log('Signed message length:', signedMessage.length)
 
     const { signature: falconSignature } = await signPadded(
       new Uint8Array(0),
-      new Uint8Array(payloadHash),
+      signedMessage,
       falconSeed
     )
 
