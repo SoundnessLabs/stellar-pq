@@ -1,0 +1,19 @@
+{
+  "name": "stellar-pq-e2e",
+  "private": true,
+  "version": "0.0.1",
+  "description": "End-to-end testnet harness for the Falcon smart account. Audit-readiness artifact — produces a real testnet transaction signed with Falcon-512 over a domain-separated payload, then captures the explorer URLs as a JSON receipt.",
+  "type": "module",
+  "scripts": {
+    "start": "bun run run.ts",
+    "deploy-only": "bun run run.ts -- --skip-transfer"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^14.5.0",
+    "falcon-wasm": "file:../web-demo/vendor/falcon-wasm"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.6.0"
+  }
+}

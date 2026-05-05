@@ -1,0 +1,6 @@
+.env
+node_modules/
+bun.lockb
+runs/
+
+# bun.lock IS committed — it pins the exact deps for audit reproducibility.
