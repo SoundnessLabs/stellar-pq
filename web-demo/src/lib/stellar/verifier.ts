@@ -20,7 +20,7 @@ export async function verifySignatureOnChain(
 ): Promise<VerificationResult> {
   try {
     // Create server and keypair
-    const server = new StellarSdk.SorobanRpc.Server(RPC_URL)
+    const server = new StellarSdk.rpc.Server(RPC_URL)
     const sourceKeypair = StellarSdk.Keypair.fromSecret(DEMO_SECRET)
     const sourcePublicKey = sourceKeypair.publicKey()
 
@@ -53,14 +53,14 @@ export async function verifySignatureOnChain(
     try {
       const simulation = await server.simulateTransaction(transaction)
 
-      if (StellarSdk.SorobanRpc.Api.isSimulationError(simulation)) {
+      if (StellarSdk.rpc.Api.isSimulationError(simulation)) {
         return {
           success: false,
           error: `Simulation failed: ${simulation.error}`,
         }
       }
 
-      preparedTransaction = StellarSdk.SorobanRpc.assembleTransaction(
+      preparedTransaction = StellarSdk.rpc.assembleTransaction(
         transaction,
         simulation
       ).build()
@@ -219,7 +219,7 @@ export async function simulateVerification(
   signature: Uint8Array
 ): Promise<VerificationResult> {
   try {
-    const server = new StellarSdk.SorobanRpc.Server(RPC_URL)
+    const server = new StellarSdk.rpc.Server(RPC_URL)
     const sourceKeypair = StellarSdk.Keypair.fromSecret(DEMO_SECRET)
     const sourcePublicKey = sourceKeypair.publicKey()
     const account = await server.getAccount(sourcePublicKey)
@@ -242,7 +242,7 @@ export async function simulateVerification(
 
     const simulation = await server.simulateTransaction(transaction)
 
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(simulation)) {
+    if (StellarSdk.rpc.Api.isSimulationError(simulation)) {
       return {
         success: false,
         error: `Simulation failed: ${simulation.error}`,
