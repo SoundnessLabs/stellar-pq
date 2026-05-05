@@ -1,0 +1,93 @@
+Crate:     derivative
+Version:   2.2.0
+Warning:   unmaintained
+Title:     `derivative` is unmaintained; consider using an alternative
+Date:      2024-06-26
+ID:        RUSTSEC-2024-0388
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0388
+Dependency tree:
+derivative 2.2.0
+├── ark-poly 0.4.2
+│   └── ark-ec 0.4.2
+│       ├── soroban-env-host 23.0.1
+│       │   ├── soroban-sdk 23.5.3
+│       │   │   └── soroban-falcon-smart-account 0.1.0
+│       │   └── soroban-ledger-snapshot 23.5.3
+│       │       └── soroban-sdk 23.5.3
+│       └── ark-bls12-381 0.4.0
+│           └── soroban-env-host 23.0.1
+├── ark-ff 0.4.2
+│   ├── soroban-env-host 23.0.1
+│   ├── ark-poly 0.4.2
+│   ├── ark-ec 0.4.2
+│   └── ark-bls12-381 0.4.0
+└── ark-ec 0.4.2
+
+Crate:     paste
+Version:   1.0.15
+Warning:   unmaintained
+Title:     paste - no longer maintained
+Date:      2024-10-07
+ID:        RUSTSEC-2024-0436
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0436
+Dependency tree:
+paste 1.0.15
+├── wasmi_core 0.13.0
+│   └── soroban-wasmi 0.31.1-soroban.20.0.1
+│       ├── soroban-env-host 23.0.1
+│       │   ├── soroban-sdk 23.5.3
+│       │   │   └── soroban-falcon-smart-account 0.1.0
+│       │   └── soroban-ledger-snapshot 23.5.3
+│       │       └── soroban-sdk 23.5.3
+│       └── soroban-env-common 23.0.1
+│           ├── soroban-sdk-macros 23.5.3
+│           │   └── soroban-sdk 23.5.3
+│           ├── soroban-ledger-snapshot 23.5.3
+│           ├── soroban-env-host 23.0.1
+│           └── soroban-env-guest 23.0.1
+│               └── soroban-sdk 23.5.3
+└── ark-ff 0.4.2
+    ├── soroban-env-host 23.0.1
+    ├── ark-poly 0.4.2
+    │   └── ark-ec 0.4.2
+    │       ├── soroban-env-host 23.0.1
+    │       └── ark-bls12-381 0.4.0
+    │           └── soroban-env-host 23.0.1
+    ├── ark-ec 0.4.2
+    └── ark-bls12-381 0.4.0
+
+Crate:     rand
+Version:   0.8.5
+Warning:   unsound
+Title:     Rand is unsound with a custom logger using `rand::rng()`
+Date:      2026-04-09
+ID:        RUSTSEC-2026-0097
+URL:       https://rustsec.org/advisories/RUSTSEC-2026-0097
+Dependency tree:
+rand 0.8.5
+├── soroban-sdk 23.5.3
+│   └── soroban-falcon-smart-account 0.1.0
+├── soroban-env-host 23.0.1
+│   ├── soroban-sdk 23.5.3
+│   └── soroban-ledger-snapshot 23.5.3
+│       └── soroban-sdk 23.5.3
+└── ark-std 0.4.0
+    ├── ark-serialize 0.4.2
+    │   ├── soroban-env-host 23.0.1
+    │   ├── ark-poly 0.4.2
+    │   │   └── ark-ec 0.4.2
+    │   │       ├── soroban-env-host 23.0.1
+    │   │       └── ark-bls12-381 0.4.0
+    │   │           └── soroban-env-host 23.0.1
+    │   ├── ark-ff 0.4.2
+    │   │   ├── soroban-env-host 23.0.1
+    │   │   ├── ark-poly 0.4.2
+    │   │   ├── ark-ec 0.4.2
+    │   │   └── ark-bls12-381 0.4.0
+    │   ├── ark-ec 0.4.2
+    │   └── ark-bls12-381 0.4.0
+    ├── ark-poly 0.4.2
+    ├── ark-ff 0.4.2
+    ├── ark-ec 0.4.2
+    └── ark-bls12-381 0.4.0
+
