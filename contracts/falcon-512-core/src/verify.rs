@@ -31,7 +31,9 @@
 //! - Falcon specification: <https://falcon-sign.info/falcon.pdf>
 //! - NIST PQC: <https://csrc.nist.gov/projects/post-quantum-cryptography>
 
-use crate::ntt::{ntt_forward, ntt_inverse, poly_pointwise_mul, poly_prepare_for_mul, poly_sub};
+use crate::ntt::{
+    field_sub, ntt_forward, ntt_inverse, poly_pointwise_mul, poly_prepare_for_mul, poly_sub,
+};
 use crate::{
     FALCON_512_N, FALCON_512_PUBKEY_SIZE, FALCON_MAX_MESSAGE_SIZE, FALCON_SIG_MAX_SIZE,
     FALCON_SIG_MIN_SIZE, L2_BOUND_512, Q,
@@ -322,10 +324,17 @@ impl FalconVerifier {
 
             const ACCEPT_THRESHOLD: u32 = 5 * Q;
             if w < ACCEPT_THRESHOLD {
+                // Reduce w mod Q with bounded conditional subtractions. The
+                // accept threshold guarantees w < 5*Q, so four subtractions
+                // suffice. The naive `while v >= Q { v -= Q; }` form gets
+                // rewritten by LLVM as `w % Q` and lowered to hardware UDIV
+                // at -Oz/-Os; see docs/audit/constant-time-analysis.md F-001.
                 let mut v = w;
-                while v >= Q {
-                    v -= Q;
-                }
+                v = field_sub(v, Q);
+                v = field_sub(v, Q);
+                v = field_sub(v, Q);
+                v = field_sub(v, Q);
+                debug_assert!(v < Q);
                 c0[idx] = v as u16;
                 idx += 1;
                 remaining -= 1;
