@@ -67,6 +67,8 @@ const WASM_PATH =
   process.env.WASM_PATH ||
   join(
     REPO_ROOT,
+    'contracts',
+    'soroban-falcon-smart-account',
     'target',
     'wasm32v1-none',
     'release',
