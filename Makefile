@@ -8,7 +8,7 @@
 #   make ct-scan         # rerun the constant-time analysis fixtures
 #   make audit-scan      # rerun cargo audit + clippy across all crates
 
-.PHONY: build build-account build-verifier build-core test e2e ct-scan audit-scan clean
+.PHONY: build build-account build-verifier build-core test e2e ct-scan audit-scan scout-scan clean
 
 CRATES := falcon-512-core soroban-falcon-smart-account soroban-falcon-verifier
 ACCOUNT_WASM := target/wasm32v1-none/release/soroban_falcon_smart_account.wasm
@@ -42,6 +42,9 @@ ct-scan:
 
 audit-scan:
 	bash docs/audit/dep-scan/run.sh
+
+scout-scan:
+	bash docs/audit/scout-scan/run.sh
 
 clean:
 	@for c in $(CRATES); do \

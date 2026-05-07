@@ -43,21 +43,36 @@ impl FalconVerifierContract {
             return false;
         }
 
+        // Per-byte copies use `let Some(b) = ... else { return false; }`
+        // rather than `unwrap()`. Bounds were enforced by the size checks
+        // above, so `get()` should always be `Some` here -- but a verify()
+        // that returns `false` on malformed input is a strictly safer
+        // failure mode than a host trap, and matches the smart-account's
+        // panic-free __check_auth pattern.
         let mut pk_bytes = [0u8; FALCON_512_PUBKEY_SIZE];
         for i in 0..FALCON_512_PUBKEY_SIZE {
-            pk_bytes[i] = public_key.get(i as u32).unwrap();
+            let Some(b) = public_key.get(i as u32) else {
+                return false;
+            };
+            pk_bytes[i] = b;
         }
 
         let sig_len_usize = sig_len as usize;
         let mut sig_bytes = [0u8; FALCON_SIG_MAX_SIZE as usize];
         for i in 0..sig_len_usize {
-            sig_bytes[i] = signature.get(i as u32).unwrap();
+            let Some(b) = signature.get(i as u32) else {
+                return false;
+            };
+            sig_bytes[i] = b;
         }
 
         let msg_len_usize = msg_len as usize;
         let mut msg_bytes = [0u8; FALCON_MAX_MESSAGE_SIZE];
         for i in 0..msg_len_usize {
-            msg_bytes[i] = message.get(i as u32).unwrap();
+            let Some(b) = message.get(i as u32) else {
+                return false;
+            };
+            msg_bytes[i] = b;
         }
 
         FalconVerifier::verify_512(

@@ -1,0 +1,41 @@
+[INFO] Validating CLI arguments...
+[INFO] Getting detector names...
+[INFO] Compiling detectors...
+[INFO] Running scout...
+Warning: `--pipe-stdout` is experimental
+Checking with toolchain `nightly-2025-08-07-aarch64-apple-darwin`
+    Checking soroban-falcon-smart-account v0.1.0 (/Users/alexandreroque/soundnesslabs/stellar-pq/contracts/soroban-falcon-smart-account)
+    Finished `release` profile [optimized] target(s) in 1.86s
+warning: [ENHANCEMENT] Assert causes panic. Instead, return a proper error.
+  --> src/lib.rs:59:15
+   |
+59 | const _: () = assert!(SIGNED_MESSAGE_LEN <= SIGNED_MESSAGE_MAX);
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(assert_violation)]` on by default
+
+warning: [ENHANCEMENT] Use the latest version of Soroban
+  |
+  = help: The latest Soroban version is "26.0.0", and your version is "23.4.0"
+  = note: `#[warn(soroban_version)]` on by default
+
+warning: [MEDIUM] In order to prevent a single transaction from consuming all the gas in a block, unbounded operations must be avoided
+   --> src/lib.rs:165:9
+    |
+165 | /         for i in 0..sig_len_usize {
+166 | |             sig_bytes[i] = signature
+167 | |                 .get(i as u32)
+168 | |                 .ok_or(Error::InvalidSignatureSize)?;
+169 | |         }
+    | |_________^
+    |
+    = help: This loop seems to do not have a fixed number of iterations
+    = note: `#[warn(dos_unbounded_operation)]` on by default
+
+Summary:
++------------------------------+----------+----------+--------+-------+-------------+
+| Crate                        | Status   | Critical | Medium | Minor | Enhancement | 
++------------------------------+----------+----------+--------+-------+-------------+
+| soroban_falcon_smart_account | Analyzed | 0        | 1      | 0     | 2           | 
++------------------------------+----------+----------+--------+-------+-------------+
+report.md successfully generated.

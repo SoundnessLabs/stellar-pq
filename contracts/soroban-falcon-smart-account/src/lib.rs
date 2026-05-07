@@ -47,6 +47,17 @@ pub const DOMAIN_SEPARATOR: &[u8] = b"soroban-falcon-smart-account-v1";
 /// `DOMAIN_SEPARATOR` is 31 bytes and the Soroban payload is 32 bytes.
 const SIGNED_MESSAGE_MAX: usize = 128;
 
+/// Exact length of the assembled signed message: `DOMAIN_SEPARATOR.len() + 32`.
+/// Folded to a compile-time constant so the runtime assembly path has no
+/// arithmetic on dynamic lengths.
+const SIGNED_MESSAGE_LEN: usize = DOMAIN_SEPARATOR.len() + 32;
+
+// Compile-time invariant: the stack buffer SIGNED_MESSAGE_MAX is large
+// enough for the assembled message. If anyone ever changes
+// DOMAIN_SEPARATOR to a longer string this assertion fails the build
+// rather than silently overrunning the buffer.
+const _: () = assert!(SIGNED_MESSAGE_LEN <= SIGNED_MESSAGE_MAX);
+
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
@@ -70,6 +81,10 @@ impl FalconSmartAccount {
         env.storage()
             .instance()
             .set(&FALCON_PUBKEY_KEY, &falcon_pubkey);
+        // Emit an `init` event so off-chain observers can index the
+        // account's initial Falcon public key without a contract call.
+        env.events()
+            .publish((symbol_short!("falcon"), symbol_short!("init")), falcon_pubkey);
     }
 
     /// Get the stored Falcon public key.
@@ -95,6 +110,10 @@ impl FalconSmartAccount {
         env.storage()
             .instance()
             .set(&FALCON_PUBKEY_KEY, &new_pubkey);
+        // Emit a `rotate` event for off-chain audit trails. Observers can
+        // detect rotation without re-reading instance storage.
+        env.events()
+            .publish((symbol_short!("falcon"), symbol_short!("rotate")), new_pubkey);
         Ok(())
     }
 }
@@ -151,22 +170,17 @@ impl CustomAccountInterface for FalconSmartAccount {
 
         // Build the domain-separated message:
         //     DOMAIN_SEPARATOR || signature_payload.to_array()
+        // SIGNED_MESSAGE_LEN is a compile-time constant; the static assert
+        // above guarantees it fits in SIGNED_MESSAGE_MAX, so this path
+        // contains no runtime length arithmetic.
         let payload_array = signature_payload.to_array();
-        let domain = DOMAIN_SEPARATOR;
-        let msg_len = domain.len() + payload_array.len();
-        // Compile-time invariant: keep SIGNED_MESSAGE_MAX aligned with the
-        // tag length so we do not silently truncate. This is defensive; a
-        // stack-allocated buffer overflow would otherwise be a security bug.
-        if msg_len > SIGNED_MESSAGE_MAX {
-            return Err(Error::VerificationFailed);
-        }
         let mut signed_msg = [0u8; SIGNED_MESSAGE_MAX];
-        signed_msg[..domain.len()].copy_from_slice(domain);
-        signed_msg[domain.len()..msg_len].copy_from_slice(&payload_array);
+        signed_msg[..DOMAIN_SEPARATOR.len()].copy_from_slice(DOMAIN_SEPARATOR);
+        signed_msg[DOMAIN_SEPARATOR.len()..SIGNED_MESSAGE_LEN].copy_from_slice(&payload_array);
 
         let ok = FalconVerifier::verify_512(
             &pk_bytes,
-            &signed_msg[..msg_len],
+            &signed_msg[..SIGNED_MESSAGE_LEN],
             &sig_bytes[..sig_len_usize],
         );
 
