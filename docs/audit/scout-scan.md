@@ -105,9 +105,13 @@ reviewer does not re-raise them.
 
 ### F-FP-1 — `[MEDIUM] dos_unbounded_operation` on per-byte copy loops
 
-Affects three sites: smart-account `lib.rs:146` (sig copy), verifier
-`lib.rs:53` (sig copy), verifier `lib.rs:59` (msg copy). Scout reports
-"This loop seems to do not have a fixed number of iterations".
+Affects three sites in the post-fix codebase:
+
+- smart-account `lib.rs:165` — sig-byte copy in `__check_auth`
+- verifier `lib.rs:62` — sig-byte copy in `verify`
+- verifier `lib.rs:71` — message-byte copy in `verify`
+
+Scout reports "This loop seems to do not have a fixed number of iterations".
 
 **Why this is a false positive.** Each loop runs over a length variable
 (`sig_len_usize` or `msg_len_usize`) that is checked against a hard
