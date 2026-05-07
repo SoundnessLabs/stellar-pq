@@ -113,9 +113,10 @@ engagement. The full pre-audit pack lives under
 
 | Area | Status |
 | --- | --- |
-| `falcon-512-core` verify path | KAT-tested, constant-time-clean at the contract's `-Oz` profile, six unit tests |
-| Smart-account contract | Domain-separated `__check_auth`, panic-free runtime paths, key rotation, regression tests |
-| Standalone verifier contract | Three-snapshot integration tests; rejection paths covered |
+| `falcon-512-core` verify path | Constant-time-clean at the contract's `-Oz` profile (see `docs/audit/constant-time-analysis.md`); 6 unit tests |
+| Test coverage | **35 tests** across the 3 crates (13 unit + 22 integration), including a `tests/kat.rs` suite that replays **all 100 official NIST Falcon-512 KAT vectors** (`tests/falcon512-KAT.rsp`) plus negative tests for wrong-message and wrong-public-key |
+| Smart-account contract | Domain-separated `__check_auth`, panic-free runtime paths, key rotation, KAT + integration + benchmark tests |
+| Standalone verifier contract | KAT + integration + benchmark tests; deterministic Soroban env-test snapshots committed under `test_snapshots/` |
 | Web demo | Functional on testnet; not hardened for mainnet (see `remediation-log.md` TM-001) |
 | End-to-end testnet flow | One full Falcon-signed transfer landed on testnet (see receipt) |
 | Mainnet | Not yet recommended — pending audit completion and TM-001 / TM-002 follow-ups |
