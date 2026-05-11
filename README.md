@@ -5,6 +5,13 @@ cryptographic schemes for the Stellar blockchain, explored both at the
 **application level** (via Soroban Smart Accounts) and at the **protocol
 level**, by studying signature schemes that are candidates for aggregation.
 
+The direction of the work tracks Stellar discussion
+[#1915 — Post-Quantum Signature Verification Host Functions in Soroban](https://github.com/orgs/stellar/discussions/1915),
+which scopes native verification for the three NIST PQ signature schemes
+— ML-DSA (FIPS 204), FN-DSA / Falcon (FIPS 206), and SLH-DSA (FIPS 205).
+FALCON-512 is implemented today; see [Roadmap](#roadmap) for what's
+next.
+
 > **WARNING.** This code has not been audited. Do **not** use in
 > production or with real funds until a professional security audit has
 > been completed. A formal review under the
@@ -120,6 +127,64 @@ engagement. The full pre-audit pack lives under
 | Web demo | Reference frontend — **out of audit scope**; functional on testnet |
 | End-to-end testnet flow | One full Falcon-signed transfer landed on testnet (see receipt) |
 | Mainnet | Not yet recommended — pending audit completion and TM-002 follow-up |
+
+## Roadmap
+
+What's next, aligned with Stellar discussion
+[#1915](https://github.com/orgs/stellar/discussions/1915):
+
+- **ML-DSA verifier (FIPS 204).** Pure-Rust ML-DSA-44 / ML-DSA-65
+  verifier deployable as a Soroban smart contract, mirroring the
+  structure of the FALCON-512 verifier. ML-DSA is the
+  NIST-standardized general-purpose PQ signature, supported across
+  HSMs, KMS providers, and consumer platforms (e.g. Apple CryptoKit,
+  AWS / Google Cloud KMS).
+- **SLH-DSA verifier (FIPS 205).** Pure-Rust SLH-DSA-128s / SLH-DSA-128f
+  verifier deployable as a Soroban smart contract. SLH-DSA is the
+  conservative hash-based fallback in the NIST PQ portfolio: its
+  security reduces to standard hash preimage and second-preimage
+  resistance, making it the right fit for high-value vaults,
+  governance, and key-rotation flows. Signing is expensive, but
+  verification — the only path that runs on-chain — is plain SHAKE.
+- **PQ signer registration in the Smart Account.** Extend the Soroban
+  Smart Account so a PQ public key (ML-DSA, FALCON-512, or SLH-DSA) —
+  or a proof-based signature commitment (see below) — can be
+  registered as a signer alongside existing signers. This is the
+  "add another signer" form of the hybrid pattern: any registered
+  signer can authorize a transaction, letting users pick a scheme
+  (or rotate between them) without redeploying the account.
+- **Public Soroban PQ benchmark harness.** Compare host-function vs.
+  pure-WASM verification costs across all three NIST schemes (ML-DSA,
+  FALCON, SLH-DSA) inside a real Soroban contract, so the
+  cost-profile arguments in #1915 are backed by reproducible numbers.
+- **Proof-based signatures: a Stellar-native PQ migration path.**
+  Ed25519 under RFC 8032 already derives the signing scalar
+  deterministically from a seed via SHA-512 — the seed *is* the
+  preimage. When a quantum threat becomes realistic, Stellar can
+  stop accepting Ed25519 signatures and start accepting *proof-based
+  signatures* (specifically, a proof of seed): a PQ zero-knowledge
+  proof that the holder of an address knows the seed `x` such that
+  `Q = (SHA-512-derived scalar of x) · G`, without revealing `x`.
+  This is the only migration strategy that satisfies all four desired
+  properties (P1–P4) in the
+  [Coinbase Independent Advisory Board position paper on Quantum Computing and Blockchain](https://www.coinbase.com/blog/coinbase-quantum-advisory-council-publishes-position-paper-on-quantum-computing-and-blockchain),
+  which cites this approach directly. The Soroban-side verifier is
+  based on [WHIR](https://eprint.iacr.org/2024/1586); a prototype and
+  benchmarks are in progress. The same WHIR verifier plugs into the
+  Smart Account as an additional signer type — a registered seed
+  commitment authorizes a transaction by submitting a proof-based
+  signature, sitting alongside the NIST PQ signers above.
+
+  Crucially, this is **straightforward to adopt on the signer side**:
+  wallets and custodians keep their existing Ed25519 keys, key
+  derivation paths, and HSM/MPC stacks unchanged, and only need to
+  add the ability to *produce a proof* over the seed they already
+  hold. Compare this to rolling out a new PQ signature scheme, which
+  requires new key formats, new HSM/KMS curve support, new MPC
+  protocols, and a coordinated key-migration ceremony for every
+  account. Proof-based signatures move the PQ work into software
+  that sits next to the existing signer, rather than into the signer
+  itself.
 
 ## License
 
