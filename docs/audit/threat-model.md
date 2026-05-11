@@ -4,8 +4,8 @@
 | --- | --- |
 | Project | `stellar-pq` — post-quantum smart account on Stellar Soroban |
 | Version | First model; covers commits up to `f37ac25` (2026-05-05) |
-| Scope | `contracts/soroban-falcon-smart-account`, `contracts/falcon-512-core`, and the web-demo signing flow that drives them |
-| Out of scope | Soroban host (`soroban-env-host`), validator consensus, the standalone `soroban-falcon-verifier` contract (no auth surface) |
+| Scope | `contracts/falcon-512-core` (Falcon-512 verifier primitive) and `contracts/soroban-falcon-smart-account` (`CustomAccountInterface` impl: storage, domain separation, key rotation, `__check_auth`) |
+| Out of scope | Soroban host (`soroban-env-host`), validator consensus, the standalone `soroban-falcon-verifier` contract (no auth surface), and **any off-chain signer or frontend** (including the reference `web-demo/` and the vendored `falcon-wasm` signer). Frontends are user-replaceable; the contract MUST remain secure under any conforming — including malicious — signer. |
 | Owner | Soundness Labs |
 | Methodology | Stellar SCF Audit Bank STRIDE template ([reference](https://developers.stellar.org/docs/build/security-docs/threat-modeling/STRIDE-template)) |
 
@@ -35,9 +35,12 @@ Three crates back this:
   contract. **Out of scope** for this model: it has no auth surface; it
   just exposes Falcon verification as a public utility.
 
-The web demo (`web-demo/`) is the off-chain signer: it talks to a Soroban
-RPC, builds the authorization preimage, hashes it (SHA-256), prepends the
-domain-separation tag, signs with `falcon-wasm`, and resubmits.
+A reference off-chain signer is provided under `web-demo/` for testing
+and demonstration; it builds the authorization preimage, prepends
+`DOMAIN_SEPARATOR`, and signs with the vendored `falcon-wasm`. **The web
+demo is out of scope.** Any conforming frontend can drive the contract;
+the security argument below holds against an arbitrary (including
+malicious) frontend.
 
 ### Data flow diagram
 
@@ -84,11 +87,14 @@ flowchart LR
 
 **Trust boundaries.**
 
-- **B1 — Browser ↔ Network.** Anything in the browser is fully under user
-  control, and the network operator (RPC host) sees and could tamper with
-  bytes in flight.
-- **B2 — Network ↔ Contract.** The Soroban host validates the signature
-  via our `__check_auth` before any state mutation runs.
+- **B1 — Browser ↔ Network.** Out of audit scope. The contract treats
+  everything reaching it across B1+B2 as adversarial. The security
+  argument relies only on `__check_auth` rejecting any payload it cannot
+  Falcon-verify under the stored pubkey.
+- **B2 — Network ↔ Contract.** The Soroban host hands `__check_auth` the
+  canonical `signature_payload` (SHA-256 of the XDR
+  `HashIdPreimageSorobanAuthorization`). The contract trusts only this
+  host-built value — not anything the browser or RPC asserts.
 
 ### Asset inventory
 
@@ -113,8 +119,10 @@ a 32-byte `signature_payload` that is `SHA-256` over the XDR-encoded
 | `signatureExpirationLedger` | Maximum ledger at which the signature is valid. |
 | `invocation` | The full `rootInvocation` — contract address, function, args, sub-invocations. |
 
-This is verified against in `web-demo/src/lib/stellar/smart-account.ts:701`,
-which is what the off-chain signer reconstructs and signs.
+The off-chain signer must reconstruct the same XDR preimage and hash it.
+The reference `web-demo` signer demonstrates this at
+`web-demo/src/lib/stellar/smart-account.ts:701` for completeness, but the
+reference is illustrative only — out of scope for this model.
 
 ---
 
@@ -136,7 +144,7 @@ which is what the off-chain signer reconstructs and signs.
 | Category | Issues |
 | --- | --- |
 | **Spoofing** | **Spoof.1** — An attacker forges a Falcon signature for an arbitrary `signature_payload` and submits a tx as the account. <br> **Spoof.2** — An attacker captures a Falcon signature produced for the standalone `soroban-falcon-verifier` contract and replays it against `__check_auth` (or vice versa). <br> **Spoof.3** — An attacker captures a valid testnet signature and replays it on mainnet (or the inverse). <br> **Spoof.4** — An attacker captures a previously-submitted signature and re-broadcasts it to repeat the authorization. <br> **Spoof.5** — An attacker submits a tx whose `_auth_contexts` differ from what the user intended to sign (e.g. user signed "transfer 1 XLM", attacker submits "transfer 1000 XLM"). |
-| **Tampering** | **Tamper.1** — A network operator (or RPC) modifies bytes of the signed transaction in flight. <br> **Tamper.2** — An attacker writes directly to `F_PUBKEY` to substitute their own key. <br> **Tamper.3** — An attacker submits a non-canonical Falcon signature: a compressed encoding followed by garbage trailing bytes that the decoder ignores. <br> **Tamper.4** — A compromised browser extension swaps the Falcon signer (`falcon-wasm`) or its WASM hash. |
+| **Tampering** | **Tamper.1** — A network operator (or RPC) modifies bytes of the signed transaction in flight. <br> **Tamper.2** — An attacker writes directly to `F_PUBKEY` to substitute their own key. <br> **Tamper.3** — An attacker submits a non-canonical Falcon signature: a compressed encoding followed by garbage trailing bytes that the decoder ignores. |
 | **Repudiation** | **Repudiate.1** — The account holder later claims they did not authorize a transaction that succeeded. <br> **Repudiate.2** — A failed `__check_auth` leaves no on-chain trace, complicating after-the-fact incident review. |
 | **Information Disclosure** | **Info.1** — `__check_auth` execution time leaks information about the signature contents (e.g. nonce bits, position of rejected polynomial coefficients). <br> **Info.2** — The off-chain Falcon seed leaks (browser malware, malicious extension, hostile RPC operator script-injecting the demo page). <br> **Info.3** — Reuse of the same Falcon public key across multiple accounts allows third parties to link those accounts. |
 | **Denial of Service** | **DoS.1** — An attacker submits a transaction whose `signature_payload`-input message exceeds `FALCON_MAX_MESSAGE_SIZE`, forcing the verifier to allocate a buffer it can't service. <br> **DoS.2** — An attacker submits an oversized signature (`> FALCON_SIG_MAX_SIZE`) to exhaust the per-byte copy loop. <br> **DoS.3** — An attacker submits a Falcon CT-format (809-byte) signature, hoping the dispatcher pulls in a CT decoder path that has not been audited. <br> **DoS.4** — An unexpected condition inside `__check_auth` (missing pubkey, malformed stored bytes) triggers a `panic!`, propagating as a host trap and making the account unusable for the entire ledger. <br> **DoS.5** — An attacker spams `rotate_key` calls to burn the account's stored fees. <br> **DoS.6** — Operator deploys the contract with a malformed public key, bricking the account from minute zero. <br> **DoS.7** — An attacker submits an `__check_auth` whose Falcon polynomial work consumes more gas than the account holder budgeted. |
@@ -168,7 +176,6 @@ citations are `file:line` against the commits in this repo.
 | **Tamper.1.R.1** | The `signature_payload` is the host-side SHA-256 of the XDR preimage. Any in-flight modification by an RPC or network operator changes the bytes the host hashes; the recomputed payload no longer matches what the user signed and `__check_auth` rejects. |
 | **Tamper.2.R.1** | Soroban's host enforces that contract instance storage is writable only by the contract itself. The smart-account writes `F_PUBKEY` only inside `__constructor` (`lib.rs:64-73`) and `rotate_key` (`lib.rs:90-99`). External writes are not possible through the host API. |
 | **Tamper.3.R.1** | `verify.rs:120-124` rejects any non-zero trailing byte after the compressed encoding ends. Padded-format signatures pass because their tail is exactly zeroes; malformed sigs with garbage tails are rejected with `false`. |
-| **Tamper.4.R.1** | Out of scope for the contract layer. Partial operational mitigation: `falcon-wasm` is git-vendored (`web-demo/package.json` resolves it as `"file:./vendor/falcon-wasm"`), so a hostile npm registry cannot substitute the package — integrity reduces to the vendored bytes' git history. The smart-account contract WASM (a separate concern) is pinned at deploy time via `VITE_WASM_HASH` (`web-demo/src/lib/stellar/config.ts:19`, validated at `smart-account.ts:110-148`). **Open items — see §3 follow-ups: (a) verify the loaded `falcon-wasm` bytes against a pinned hash at signer load; (b) move signer execution into a sandboxed worker so a compromised page script cannot tamper with it in-process.** |
 
 ### Repudiation
 
@@ -183,7 +190,7 @@ citations are `file:line` against the commits in this repo.
 | --- | --- |
 | **Info.1.R.1** | A constant-time analysis (Trail of Bits `constant-time-analysis` plugin) was run against `falcon-512-core` and the only identified issue (F-001, UDIV in `hash_to_point`'s rejection-sampling reduction) was remediated by replacing the `while v >= Q { v -= Q; }` loop with four constant-time `field_sub` calls (`verify.rs:333-336`, commit `06318c1`). See `docs/audit/constant-time-analysis.md` for full report. |
 | **Info.1.R.2** | Even prior to the fix, the inputs flagged were derived from public data (SHAKE256 over public nonce + message), and Soroban's deterministic gas metering does not surface microarchitectural timing at the network layer. |
-| **Info.2.R.1** | Out of scope for the contract layer. Operational mitigation: users should keep the Falcon seed in a hardware-backed credential store (WebAuthn / passkeys / secure enclave) rather than browser local storage. The web demo currently uses ephemeral browser memory. **Open item — see §3 follow-ups: integrate a real key-storage primitive before promoting beyond demo.** |
+| **Info.2.R.1** | Out of scope for the contract layer — key custody is the frontend's responsibility. From the contract's point of view a leaked seed is indistinguishable from a legitimate user; damage is bounded by what each `signature_payload` authorizes (invocation + network + nonce + expiration are all bound; replay outside that scope is rejected per Spoof.3/4/5). Users needing stronger custody should drive the contract with a frontend that backs the seed with a hardware credential store (passkey / secure enclave). |
 | **Info.3.R.1** | Accepted: this is the same property as any single-key account scheme. Holders who want unlinkability should deploy separate accounts with separate seeds. |
 
 ### Denial of Service
@@ -212,18 +219,14 @@ citations are `file:line` against the commits in this repo.
 These are not gaps in the current threat model so much as future work that
 the model has surfaced:
 
-1. **Tamper.4 / Info.2 — secure key storage.** Wire `falcon-wasm` to a
-   real credential store (WebAuthn-style passkey backed by a secure
-   enclave) instead of browser ephemeral memory before this is anything
-   other than a demo. Verify the WASM hash at signer load.
-2. **Elevation.3 — rotate-key race.** Decide whether to add a `pause()`
+1. **Elevation.3 — rotate-key race.** Decide whether to add a `pause()`
    admin pair. Not blocking for the audit, but worth scoping with the
    reviewer — some firms will recommend it as standard for any
    account-abstraction contract that supports key rotation.
-3. **DoS.5 hardening.** Track gas spent per-account on failed
+2. **DoS.5 hardening.** Track gas spent per-account on failed
    `rotate_key` calls and rate-limit at a high water mark, if the audit
    firm flags spam as a real concern. Currently relies on economics.
-4. **CI integration.** Wire `cargo audit`, `cargo clippy`, and the
+3. **CI integration.** Wire `cargo audit`, `cargo clippy`, and the
    constant-time scan into a CI workflow so future commits cannot
    regress on these guarantees silently.
 
