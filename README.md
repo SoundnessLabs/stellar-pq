@@ -18,7 +18,7 @@ level**, by studying signature schemes that are candidates for aggregation.
 | [`contracts/falcon-512-core`](./contracts/falcon-512-core) | Pure-Rust, `no_std`, soroban-sdk-free Falcon-512 verifier. Shared by the two contracts so crypto fixes land in one place. |
 | [`contracts/soroban-falcon-verifier`](./contracts/soroban-falcon-verifier) | Standalone Soroban contract exposing `verify(pk, msg, sig) -> bool` as a public utility. |
 | [`contracts/soroban-falcon-smart-account`](./contracts/soroban-falcon-smart-account) | Soroban `CustomAccountInterface` that authorizes transactions with a Falcon-512 signature over a domain-separated payload. Supports `__constructor(falcon_pubkey)` and `rotate_key`. |
-| [`web-demo`](./web-demo) | Vite + React demo: deploys, funds, and submits Falcon-signed transfers from the browser. Uses a vendored `falcon-wasm` for off-chain signing. |
+| [`web-demo`](./web-demo) | Vite + React reference frontend driving the smart account — deploys, funds, and submits Falcon-signed transfers from the browser using a vendored `falcon-wasm` signer. **Out of audit scope:** frontends are user-replaceable; the contract must remain secure under any signer (see [`docs/audit/threat-model.md`](./docs/audit/threat-model.md)). |
 | [`e2e`](./e2e) | Reproducible testnet harness — produces an audit-grade JSON receipt with a real Falcon-signed transaction. See [`e2e/README.md`](./e2e/README.md). |
 | [`docs/audit`](./docs/audit) | Pre-audit security artifacts: threat model, constant-time analysis, dependency / lint scan, remediation log, and committed e2e receipts. |
 
@@ -117,9 +117,9 @@ engagement. The full pre-audit pack lives under
 | Test coverage | **35 tests** across the 3 crates (13 unit + 22 integration), including a `tests/kat.rs` suite that replays **all 100 official NIST Falcon-512 KAT vectors** (`tests/falcon512-KAT.rsp`) plus negative tests for wrong-message and wrong-public-key |
 | Smart-account contract | Domain-separated `__check_auth`, panic-free runtime paths, key rotation, KAT + integration + benchmark tests |
 | Standalone verifier contract | KAT + integration + benchmark tests; deterministic Soroban env-test snapshots committed under `test_snapshots/` |
-| Web demo | Functional on testnet; not hardened for mainnet (see `remediation-log.md` TM-001) |
+| Web demo | Reference frontend — **out of audit scope**; functional on testnet |
 | End-to-end testnet flow | One full Falcon-signed transfer landed on testnet (see receipt) |
-| Mainnet | Not yet recommended — pending audit completion and TM-001 / TM-002 follow-ups |
+| Mainnet | Not yet recommended — pending audit completion and TM-002 follow-up |
 
 ## License
 

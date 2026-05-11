@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Project | `stellar-pq` — Falcon-512 smart account on Stellar Soroban |
-| Last updated | 2026-05-05 |
+| Last updated | 2026-05-11 |
 | Scope | Issues identified by self-review, threat modeling, constant-time analysis, dependency audit, and clippy lints. Pre-engagement findings only — findings produced by the audit firm during the engagement will be tracked in this same file as they are reported. |
 | Standing commitment | Per the Stellar SCF Audit Bank initial-audit terms, all critical, high, and medium severity findings produced by the audit firm will be addressed within 20 business days of the report's delivery, with this log updated to reflect each fix. |
 
@@ -44,7 +44,6 @@
 | **D-002** | `derivative 2.2.0` unmaintained (RUSTSEC-2024-0388) | cargo audit | Informational | **Out of scope** | upstream | 2026-05-05 | — | — | [`dependency-and-lint-scan.md`](dependency-and-lint-scan.md) §3.1 |
 | **D-003** | `paste 1.0.15` unmaintained (RUSTSEC-2024-0436) | cargo audit | Informational | **Out of scope** | upstream | 2026-05-05 | — | — | [`dependency-and-lint-scan.md`](dependency-and-lint-scan.md) §3.1 |
 | **D-004** | `rand 0.8.5` unsound with custom logger (RUSTSEC-2026-0097) | cargo audit | Informational | **Out of scope** | upstream | 2026-05-05 | — | — | [`dependency-and-lint-scan.md`](dependency-and-lint-scan.md) §3.1 |
-| **TM-001** | Off-chain `falcon-wasm` signer not hash-verified at runtime; signing happens in the page context, not a sandboxed worker | Threat model (Tamper.4 / Info.2) | Medium | **Open** | TBD | 2026-05-05 | — | — | [`threat-model.md`](threat-model.md) Tamper.4.R.1 + §3 follow-up #1 |
 | **TM-002** | Key-rotation race: an attacker holding the current key can race a malicious tx into the same ledger as `rotate_key` | Threat model (Elevation.3) | Low | **Open** | TBD | 2026-05-05 | — | — | [`threat-model.md`](threat-model.md) Elevation.3.R.1 + §3 follow-up #2 |
 | **TM-003** | `rotate_key` spam not explicitly rate-limited; relies on per-call gas economics | Threat model (DoS.5) | Informational | **Accepted** | gnosed | 2026-05-05 | — | — | [`threat-model.md`](threat-model.md) DoS.5.R.1 + §3 follow-up #3 |
 | **CI-001** | `cargo audit`, `cargo clippy`, and the constant-time scan run only manually via `make`; no CI gate to prevent regressions | Process | Informational | **Open** | TBD | 2026-05-05 | — | — | [`threat-model.md`](threat-model.md) §3 follow-up #4 |
@@ -52,32 +51,6 @@
 ---
 
 ## Detail — open items
-
-### TM-001 — Signer WASM integrity + isolation
-
-**What.** The off-chain Falcon signer is the wasm-bindgen module
-`falcon-wasm` vendored under `web-demo/vendor/falcon-wasm/` and used
-unchanged in the e2e harness (`e2e/run.ts`). Vendoring under git defeats
-npm-supply-chain attacks because the published bytes are tracked in the
-repo. However, neither the demo nor the harness verifies the loaded
-WASM bytes at runtime against a pinned hash. A malicious browser
-extension or page-injected script could substitute the WASM module and
-either (a) exfiltrate the Falcon seed or (b) sign attacker-chosen
-payloads with the user's seed.
-
-**Plan.**
-
-1. Compute and commit the SHA-256 of `vendor/falcon-wasm/falcon_bg.wasm`
-   into a constant in `web-demo/src/lib/falcon.ts`.
-2. After fetching the WASM bytes (browser) or reading them from disk
-   (Node/bun), assert the hash matches before passing them to `init()`.
-3. Move `Falcon512KeyPair` construction and `signPadded` into a
-   dedicated Web Worker in the demo so a compromised page script cannot
-   reach into the signer's address space.
-
-**Why deferred.** Out of scope for the on-chain contract review. This
-is a wallet-grade concern that lands ahead of any mainnet promotion of
-the demo, not before the audit engagement.
 
 ### TM-002 — Key-rotation race
 
@@ -139,3 +112,4 @@ F-001 UDIV, the keccak advisory, or a new clippy regression.
 | Date | Change |
 | --- | --- |
 | 2026-05-05 | Initial registry. F-001 + D-001 fixed in-commit. TM-001…003 + CI-001 opened. D-002…004 documented as upstream-tracked. |
+| 2026-05-11 | TM-001 removed: frontends / off-chain signers (including `web-demo` and the vendored `falcon-wasm`) are out of audit scope per the updated threat model. Signer integrity is a wallet-grade concern owned by whichever frontend drives the contract. |
