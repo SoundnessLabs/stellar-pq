@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Project | `stellar-pq` — Falcon-512 smart account on Stellar Soroban |
-| Last updated | 2026-05-11 |
+| Last updated | 2026-05-11 (later — self-review remediations landed) |
 | Scope | Issues identified by self-review, threat modeling, constant-time analysis, dependency audit, and clippy lints. Pre-engagement findings only — findings produced by the audit firm during the engagement will be tracked in this same file as they are reported. |
 | Standing commitment | Per the Stellar SCF Audit Bank initial-audit terms, all critical, high, and medium severity findings produced by the audit firm will be addressed within 20 business days of the report's delivery, with this log updated to reflect each fix. |
 
@@ -47,6 +47,13 @@
 | **TM-002** | Key-rotation race: an attacker holding the current key can race a malicious tx into the same ledger as `rotate_key` | Threat model (Elevation.3) | Low | **Open** | TBD | 2026-05-05 | — | — | [`threat-model.md`](threat-model.md) Elevation.3.R.1 + §3 follow-up #2 |
 | **TM-003** | `rotate_key` spam not explicitly rate-limited; relies on per-call gas economics | Threat model (DoS.5) | Informational | **Accepted** | gnosed | 2026-05-05 | — | — | [`threat-model.md`](threat-model.md) DoS.5.R.1 + §3 follow-up #3 |
 | **CI-001** | `cargo audit`, `cargo clippy`, and the constant-time scan run only manually via `make`; no CI gate to prevent regressions | Process | Informational | **Open** | TBD | 2026-05-05 | — | — | [`threat-model.md`](threat-model.md) §3 follow-up #4 |
+| **SR-001** | `rotate_key` validated new-pubkey size before `require_auth`, exposing an unauthenticated probe oracle on pubkey-size handling | Self-review | Low | **Fixed** (reorder: `require_auth()` runs first, then size check; tests pin the ordering) | gnosed | 2026-05-11 | 2026-05-11 | _pending commit_ | smart-account/src/lib.rs:125-143 |
+| **SR-002** | No integration test exercised `rotate_key`'s auth-routing dynamically; only the domain-separator constant was pinned | Self-review | Low | **Fixed** (added `test_rotate_key_succeeds_with_mocked_auth`, `_without_auth_fails`, `_bad_size_after_auth_returns_error`) | gnosed | 2026-05-11 | 2026-05-11 | _pending commit_ | smart-account/tests/integration.rs |
+| **SR-003** | Instance-storage TTL never proactively extended in `__constructor` / `rotate_key`; relied entirely on Soroban auto-bump | Self-review | Low (defense in depth) | **Fixed** (calls `extend_ttl` after each pubkey write) | gnosed | 2026-05-11 | 2026-05-11 | _pending commit_ | smart-account/src/lib.rs:94, :135 |
+| **SR-004** | Init / rotate events re-emitted the full 897-byte pubkey, bloating ledger metadata and linking the account's pubkey across the lifetime | Self-review | Informational | **Fixed** (events now publish `env.crypto().sha256(pubkey)` instead; full pubkey remains readable via `get_pubkey`) | gnosed | 2026-05-11 | 2026-05-11 | _pending commit_ | smart-account/src/lib.rs:98-100, :139-141 |
+| **SR-005** | `get_pubkey` used `.expect("Public key not set")`, leaving a contract-side panic on an unreachable-but-existing path | Self-review | Informational | **Fixed** (returns `Result<Bytes, Error>` with `Error::PublicKeyMissing`) | gnosed | 2026-05-11 | 2026-05-11 | _pending commit_ | smart-account/src/lib.rs:111-116 |
+| **SR-006** | `threat-model.md` `lib.rs:NN` cross-references were ~50 lines stale relative to current source, increasing auditor friction; `Elevation.2.R.1` described a runtime over-length check that no longer exists (replaced by compile-time `const _: () = assert!(...)`) | Self-review | Informational | **Fixed** (all line refs updated; Elevation.2.R.1 rewritten to cite the compile-time invariant; Elevation.1.R.1 updated to reflect SR-001 ordering) | gnosed | 2026-05-11 | 2026-05-11 | _pending commit_ | docs/audit/threat-model.md |
+| **SR-007** | `verify.rs` header-byte gate comment was imprecise about Falcon spec §3.11.1 conventions for 0x2X / 0x3X / 0x5X | Self-review | Informational | **Fixed** (comment rewritten to cite the spec section and explain the two-layer CT defense) | gnosed | 2026-05-11 | 2026-05-11 | _pending commit_ | falcon-512-core/src/verify.rs:86-103 |
 
 ---
 
@@ -113,3 +120,4 @@ F-001 UDIV, the keccak advisory, or a new clippy regression.
 | --- | --- |
 | 2026-05-05 | Initial registry. F-001 + D-001 fixed in-commit. TM-001…003 + CI-001 opened. D-002…004 documented as upstream-tracked. |
 | 2026-05-11 | TM-001 removed: frontends / off-chain signers (including `web-demo` and the vendored `falcon-wasm`) are out of audit scope per the updated threat model. Signer integrity is a wallet-grade concern owned by whichever frontend drives the contract. |
+| 2026-05-11 | Self-review pass surfaced 7 findings (SR-001…007); all fixed pre-engagement. Tests added (`test_rotate_key_*`), `rotate_key` re-ordered (auth first), TTL bumps added, events emit pubkey hash instead of full pubkey, `get_pubkey` returns `Result`, threat-model line references refreshed, `verify.rs` header-gate comment cites Falcon spec §3.11.1. |

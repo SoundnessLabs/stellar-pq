@@ -47,6 +47,14 @@ pub const DOMAIN_SEPARATOR: &[u8] = b"soroban-falcon-smart-account-v1";
 /// `DOMAIN_SEPARATOR` is 31 bytes and the Soroban payload is 32 bytes.
 const SIGNED_MESSAGE_MAX: usize = 128;
 
+/// Instance-storage TTL threshold (in ledgers) below which we proactively
+/// bump. Soroban auto-extends instance TTL on every contract invocation,
+/// so this is defense-in-depth for long-idle accounts.
+const INSTANCE_TTL_THRESHOLD: u32 = 100_000;
+/// Target TTL to extend instance storage to when bumping (~30 days at
+/// ~5s/ledger). Conservative — the host clamps to network maxima.
+const INSTANCE_TTL_EXTEND_TO: u32 = 535_000;
+
 /// Exact length of the assembled signed message: `DOMAIN_SEPARATOR.len() + 32`.
 /// Folded to a compile-time constant so the runtime assembly path has no
 /// arithmetic on dynamic lengths.
@@ -78,21 +86,33 @@ impl FalconSmartAccount {
         if falcon_pubkey.len() != FALCON_512_PUBKEY_SIZE as u32 {
             panic!("Invalid public key size: expected 897 bytes");
         }
-        env.storage()
-            .instance()
-            .set(&FALCON_PUBKEY_KEY, &falcon_pubkey);
-        // Emit an `init` event so off-chain observers can index the
-        // account's initial Falcon public key without a contract call.
+        let storage = env.storage().instance();
+        storage.set(&FALCON_PUBKEY_KEY, &falcon_pubkey);
+        // Proactively extend the instance-storage TTL on init. Soroban
+        // auto-extends instance TTL on access, so this is defense-in-depth
+        // for accounts that may sit idle for long stretches.
+        storage.extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+        // Emit an `init` event with the SHA-256 of the pubkey so off-chain
+        // observers can index initialization without permanently bloating
+        // ledger metadata with the full 897-byte pubkey.
+        let pubkey_hash = env.crypto().sha256(&falcon_pubkey);
         env.events()
-            .publish((symbol_short!("falcon"), symbol_short!("init")), falcon_pubkey);
+            .publish((symbol_short!("falcon"), symbol_short!("init")), pubkey_hash);
     }
 
     /// Get the stored Falcon public key.
-    pub fn get_pubkey(env: Env) -> Bytes {
+    ///
+    /// Returns `Err(Error::PublicKeyMissing)` if the contract has not been
+    /// initialized via `__constructor`. Under normal Soroban semantics this
+    /// is unreachable (constructor runs exactly once at deploy and sets
+    /// `F_PUBKEY` unconditionally), but returning `Result` is symmetric with
+    /// the rest of the contract surface and avoids a host trap on any
+    /// pre-init code path.
+    pub fn get_pubkey(env: Env) -> Result<Bytes, Error> {
         env.storage()
             .instance()
             .get(&FALCON_PUBKEY_KEY)
-            .expect("Public key not set")
+            .ok_or(Error::PublicKeyMissing)
     }
 
     /// Rotate the Falcon public key.
@@ -103,17 +123,22 @@ impl FalconSmartAccount {
     /// rotation semantics). After success, all future transactions must be
     /// signed with `new_pubkey`.
     pub fn rotate_key(env: Env, new_pubkey: Bytes) -> Result<(), Error> {
+        // Authorize FIRST, then validate. Validating before `require_auth`
+        // would expose an unauthenticated oracle on pubkey-size handling
+        // and burn the caller's host-cost without nonce consumption.
+        env.current_contract_address().require_auth();
         if new_pubkey.len() != FALCON_512_PUBKEY_SIZE as u32 {
             return Err(Error::InvalidPublicKeySize);
         }
-        env.current_contract_address().require_auth();
-        env.storage()
-            .instance()
-            .set(&FALCON_PUBKEY_KEY, &new_pubkey);
-        // Emit a `rotate` event for off-chain audit trails. Observers can
-        // detect rotation without re-reading instance storage.
+        let storage = env.storage().instance();
+        storage.set(&FALCON_PUBKEY_KEY, &new_pubkey);
+        storage.extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+        // Emit a `rotate` event with the SHA-256 of the new pubkey for
+        // off-chain audit trails (full pubkey is reconstructable via
+        // `get_pubkey`).
+        let pubkey_hash = env.crypto().sha256(&new_pubkey);
         env.events()
-            .publish((symbol_short!("falcon"), symbol_short!("rotate")), new_pubkey);
+            .publish((symbol_short!("falcon"), symbol_short!("rotate")), pubkey_hash);
         Ok(())
     }
 }

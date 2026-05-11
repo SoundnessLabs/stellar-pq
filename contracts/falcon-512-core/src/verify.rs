@@ -83,15 +83,21 @@ impl FalconVerifier {
         if (sig_header & 0x0F) != FALCON_512_LOGN {
             return false;
         }
-        // Accept the two Falcon conventions that carry the compressed
-        // polynomial encoding: `0x20 | logn` (Falcon NIST submission /
-        // "padded" in earlier spec drafts) and `0x30 | logn` (PQClean /
-        // falcon-sign.info — covers both compressed-tight and padded, the
-        // two distinguished only by length).
+        // Falcon spec §3.11.1 reserves the high nibble of the header byte
+        // for the encoding format:
+        //   0x2X — padded encoding (compressed payload + zero tail)
+        //   0x3X — compressed encoding (no padding)
+        //   0x5X — CT encoding (constant-time, fixed-size)
+        // The verifier's canonical decoder handles compressed payloads and
+        // tolerates a zero tail, so both 0x2X and 0x3X are accepted; the
+        // post-decode trailing-byte check (§ canonicity loop below) ensures
+        // any padded form must indeed have only zero bytes after the
+        // compressed payload, preventing malleability.
         //
-        // `0x50 | logn` (CT) is deliberately rejected: a Falcon-512 CT
-        // signature is 809 bytes, already above `FALCON_SIG_MAX_SIZE`, so
-        // there is no reachable CT decode path.
+        // 0x5X (CT) is deliberately rejected by this check; the size gate
+        // above also catches it because a Falcon-512 CT signature is 809
+        // bytes (> FALCON_SIG_MAX_SIZE = 666), giving two layers of
+        // defense. Reference: Falcon NIST Round-3 submission §3.11.1.
         let fmt = sig_header & 0xF0;
         if fmt != 0x20 && fmt != 0x30 {
             return false;
