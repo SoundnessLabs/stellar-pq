@@ -3,8 +3,8 @@
 | | |
 | --- | --- |
 | Project | `stellar-pq` — Falcon-512 smart account on Stellar Soroban |
-| Last updated | 2026-05-11 (later — self-review remediations landed) |
-| Scope | Issues identified by self-review, threat modeling, constant-time analysis, dependency audit, and clippy lints. Pre-engagement findings only — findings produced by the audit firm during the engagement will be tracked in this same file as they are reported. |
+| Last updated | 2026-06-07 (multi-agent adversarial audit findings AUD-001..007 landed) |
+| Scope | Issues identified by self-review, threat modeling, constant-time analysis, dependency audit, clippy lints, and a multi-agent adversarial audit (2026-06-07). Pre-engagement findings only — findings produced by the audit firm during the engagement will be tracked in this same file as they are reported. |
 | Standing commitment | Per the Stellar SCF Audit Bank initial-audit terms, all critical, high, and medium severity findings produced by the audit firm will be addressed within 20 business days of the report's delivery, with this log updated to reflect each fix. |
 
 ## Severity definitions
@@ -54,6 +54,22 @@
 | **SR-005** | `get_pubkey` used `.expect("Public key not set")`, leaving a contract-side panic on an unreachable-but-existing path | Self-review | Informational | **Fixed** (returns `Result<Bytes, Error>` with `Error::PublicKeyMissing`) | gnosed | 2026-05-11 | 2026-05-11 | _pending commit_ | smart-account/src/lib.rs:111-116 |
 | **SR-006** | `threat-model.md` `lib.rs:NN` cross-references were ~50 lines stale relative to current source, increasing auditor friction; `Elevation.2.R.1` described a runtime over-length check that no longer exists (replaced by compile-time `const _: () = assert!(...)`) | Self-review | Informational | **Fixed** (all line refs updated; Elevation.2.R.1 rewritten to cite the compile-time invariant; Elevation.1.R.1 updated to reflect SR-001 ordering) | gnosed | 2026-05-11 | 2026-05-11 | _pending commit_ | docs/audit/threat-model.md |
 | **SR-007** | `verify.rs` header-byte gate comment was imprecise about Falcon spec §3.11.1 conventions for 0x2X / 0x3X / 0x5X | Self-review | Informational | **Fixed** (comment rewritten to cite the spec section and explain the two-layer CT defense) | gnosed | 2026-05-11 | 2026-05-11 | _pending commit_ | falcon-512-core/src/verify.rs:86-103 |
+| **AUD-001** | Signature decoder tolerated zero-padding to *any* length in `(natural, 666]`, not just the fixed padded size — an unbounded-length malleability (distinct byte strings verifying for the same (pk,msg)) | Multi-agent audit (DEC-002) | Low | **Fixed** (enforce exact-length consumption: natural compressed `decoded_len == body.len()` **or** total length `== FALCON_512_SIG_PADDED_SIZE` (666) with zero tail; KAT still passes; new `test_dec002_arbitrary_padding_rejected` regression test) | gnosed | 2026-06-07 | 2026-06-07 | _pending commit_ | falcon-512-core/src/verify.rs (canonicity block); verifier `tests/kat.rs` |
+| **AUD-002** | Header gate accepts both `0x2X` and `0x3X` high nibbles, and does not bind the nibble to body length — residual byte-level malleability | Multi-agent audit (DEC-001) | Low | **Accepted** — accepting both nibbles is **required for interop** (NIST KAT/falcon.py emit `0x29` variable; PQClean/falcon-wasm emit `0x39` compressed and `0x29` padded). Pinning one breaks a real signer. Property is EUF-CMA (no forgery); the smart account is unaffected (replay key is `signature_payload`, not the signature bytes). Documented in module docs. | gnosed | 2026-06-07 | — | — | falcon-512-core/src/verify.rs (module docs) |
+| **AUD-003** | Format comments in `verify.rs` and `tests/kat.rs` were inaccurate/inverted (claimed `0x2X`=padded-fixed / KAT uses `0x39`); SR-007's earlier fix was incomplete. Empirically the official KAT uses `0x29` with *variable* length | Multi-agent audit (DEC-004) | Informational | **Fixed** (comments corrected against the measured KAT; supersedes SR-007) | gnosed | 2026-06-07 | 2026-06-07 | _pending commit_ | falcon-512-core/src/verify.rs:22-46, 86-100; verifier `tests/kat.rs` |
+| **AUD-004** | README / optimization-report overclaimed "follows the NIST standard" and framed the scheme as "FIPS 206 / FN-DSA"; the code implements NIST **Round-3 Falcon-512**, which differs from draft FIPS 206 (domain-sep byte, context string, pubkey-hash binding) | Multi-agent audit (H2P-001) | Low | **Fixed** (README + report wording qualified to Round-3 Falcon, with an explicit FIPS-206 note) | gnosed | 2026-06-07 | 2026-06-07 | _pending commit_ | README.md; docs/audit/optimization-report.md |
+| **AUD-005** | Contract wrappers copied `Bytes` inputs byte-by-byte via `Bytes::get(i)` (≈1,563 metered host calls for pubkey+sig), dominating verification cost | Multi-agent audit (DRS-3 / optimization) | Informational (perf) | **Fixed** (bulk `copy_into_slice` after length gate; **396,903 → 12,986 CPU instructions, 30.6×**; panic-free preserved) | gnosed | 2026-06-07 | 2026-06-07 | _pending commit_ | verifier & smart-account `src/lib.rs` |
+| **AUD-006** | 16 KiB message stack buffer was undocumented and the worst-case (max-message) gas was unmeasured | Multi-agent audit (DRS-1 / DRS-2) | Low | **Fixed** (build-time `const` stack-budget assertion; added 16,384-byte worst-case benchmark = 15,033 CPU insns) | gnosed | 2026-06-07 | 2026-06-07 | _pending commit_ | verifier `src/lib.rs`, `tests/benchmark.rs` |
+| **AUD-007** | At the Falcon primitive layer, `hash_to_point` omits the FN-DSA (FIPS 206) bindings: domain-separation byte, context string, and SHA-256(pubkey) absorbed into the challenge (key-binding / BUFF) | Multi-agent audit (H2P-002) | Informational | **Accepted / Roadmap** — implementation targets Round-3 Falcon; application-layer domain separation is supplied by the smart account. FN-DSA conformance tracked in the README Roadmap. | gnosed | 2026-06-07 | — | — | README.md (Roadmap); falcon-512-core/src/verify.rs:311-349 |
+
+> **Multi-agent audit (2026-06-07).** A 6-dimension adversarial review (each
+> finding cross-checked by 3 independent verifiers) examined the verification
+> equation, `hash_to_point`, decoders/malleability, the Soroban surface, DoS/
+> resource use, and optimization. It found **no Critical / High / Medium**
+> issues. The core crypto was independently differential-tested against
+> PQClean `falcon-512/clean` (L2 bound, NTT ring-multiply, `is_short`
+> saturation, centering bijection). All confirmed findings were Low /
+> Informational and are tracked as AUD-001..007 above.
 
 ---
 

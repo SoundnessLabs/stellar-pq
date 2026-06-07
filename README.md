@@ -29,13 +29,22 @@ next.
 | [`e2e`](./e2e) | Reproducible testnet harness — produces an audit-grade JSON receipt with a real Falcon-signed transaction. See [`e2e/README.md`](./e2e/README.md). |
 | [`docs/audit`](./docs/audit) | Pre-audit security artifacts: threat model, constant-time analysis, dependency / lint scan, remediation log, and committed e2e receipts. |
 
-The Falcon-512 verifier follows the NIST standard and can be used to
-verify signatures produced by any NIST-compatible implementation, such
-as [falcon.py](https://github.com/tprest/falcon.py) or the official C
-reference. The implementation was tested against the published Known
-Answer Test (KAT) vectors. For convenience we also publish
-[falcon-rust](https://github.com/SoundnessLabs/falcon-rust), a thin
-binding to the reference C implementation.
+The verifier implements the **NIST Round-3 Falcon-512 submission** (the
+"original Falcon" design) and is validated against the 100 official
+Round-3 Falcon-512 KAT vectors. It interoperates with Round-3 Falcon
+signers such as [falcon.py](https://github.com/tprest/falcon.py), the
+official C reference, and PQClean `falcon-512/clean`. For convenience we
+also publish [falcon-rust](https://github.com/SoundnessLabs/falcon-rust),
+a thin binding to the reference C implementation.
+
+> **Note on FIPS 206.** This is *not* FN-DSA / FIPS 206. The forthcoming
+> FIPS 206 standard changes the message-hashing preamble (a
+> domain-separation byte, an application context string, and a hash of
+> the public key bound into the challenge). Those bindings are tracked in
+> the [Roadmap](#roadmap); at the application layer the smart account
+> already supplies its own domain separation. See
+> [`docs/audit/optimization-report.md`](./docs/audit/optimization-report.md)
+> and the audit notes for details.
 
 ## Architecture in one paragraph
 
@@ -114,18 +123,20 @@ engagement. The full pre-audit pack lives under
 | [`constant-time-analysis.md`](./docs/audit/constant-time-analysis.md) | Trail of Bits CT analyzer scan of `falcon-512-core` across `{arm64, x86_64} × {-Oz, -O3}`. One finding (F-001 — UDIV in `hash_to_point`) was identified and remediated in the same commit; current scan is clean on every (arch, opt) cell. |
 | [`dependency-and-lint-scan.md`](./docs/audit/dependency-and-lint-scan.md) | `cargo audit` against each crate's `Cargo.lock` plus `cargo clippy` across all targets. Three transitive upstream advisories surfaced (none reachable in our usage); a fourth (`keccak 0.1.5`) was remediated by a lockfile bump. No security-relevant clippy findings. |
 | [`remediation-log.md`](./docs/audit/remediation-log.md) | Formal vulnerability registry: per-finding ID, severity, status, owner, fix commit, and reference. Includes the application-level commitment to remediate audit-firm critical / high / medium findings within 20 business days. |
-| [`e2e-receipts/`](./docs/audit/e2e-receipts/) | Committed JSON receipts from real testnet runs of the e2e harness — contract id, Falcon public key, transaction hash, payload hash, and the on-chain explorer URL the auditor can click and independently verify. The first receipt deploys to `CANNCY2STTSAR7UQLZ7MVKQNMQ45WCDLJ67ILTOVSO6K3BJTULXSYPC4` and lands a 666-byte Falcon signature. |
+| [`optimization-report.md`](./docs/audit/optimization-report.md) | Gas & performance optimization pass: per-call verification cost is **≈ 13 k CPU instructions (≈ 0.013 % of the per-tx budget), down from ≈ 397 k** after the bulk host-copy optimization; covers the NTT / branch-free-arithmetic / zero-heap / bulk-copy wins, a worst-case 16 KB-message measurement (≈ 15 k), and the contract-size reduction. All numbers reproducible. |
+| [`e2e-receipts/`](./docs/audit/e2e-receipts/) | Committed JSON receipts from real testnet runs — contract id, transaction hash, and the on-chain explorer URL an auditor can click and independently verify. [`2026-05-05-testnet.json`](./docs/audit/e2e-receipts/2026-05-05-testnet.json) lands a 666-byte Falcon-signed transfer via the **smart account** (`CANNCY2STTSAR7UQLZ7MVKQNMQ45WCDLJ67ILTOVSO6K3BJTULXSYPC4`); [`2026-06-07-verifier-testnet.json`](./docs/audit/e2e-receipts/2026-06-07-verifier-testnet.json) deploys the **standalone verifier** (`CDDZZJ3B3BMKBPJ7ZVMC3JQC7MDNIODUXYHBCHNCGVXAL56UFBEPM4RC`) and records a real on-chain `verify(pk, msg, sig) → true`. |
 
 ## Status
 
 | Area | Status |
 | --- | --- |
 | `falcon-512-core` verify path | Constant-time-clean at the contract's `-Oz` profile (see `docs/audit/constant-time-analysis.md`); 6 unit tests |
-| Test coverage | **35 tests** across the 3 crates (13 unit + 22 integration), including a `tests/kat.rs` suite that replays **all 100 official NIST Falcon-512 KAT vectors** (`tests/falcon512-KAT.rsp`) plus negative tests for wrong-message and wrong-public-key |
+| Test coverage | **40+ tests across the 3 crates** (full suite green), including a `tests/kat.rs` suite that replays **all 100 official NIST Round-3 Falcon-512 KAT vectors** (`tests/falcon512-KAT.rsp`), wrong-message / wrong-public-key negatives, a **DEC-002 malleability regression test**, and a 16 KB worst-case gas benchmark |
 | Smart-account contract | Domain-separated `__check_auth`, panic-free runtime paths, key rotation, KAT + integration + benchmark tests |
-| Standalone verifier contract | KAT + integration + benchmark tests; deterministic Soroban env-test snapshots committed under `test_snapshots/` |
+| Standalone verifier contract | KAT + integration + benchmark tests; deterministic Soroban env-test snapshots committed under `test_snapshots/`; includes a DEC-002 malleability regression test and a 16 KB worst-case gas benchmark |
+| **Deployed (testnet)** | Standalone verifier live at [`CDDZZJ3B3BMKBPJ7ZVMC3JQC7MDNIODUXYHBCHNCGVXAL56UFBEPM4RC`](https://stellar.expert/explorer/testnet/contract/CDDZZJ3B3BMKBPJ7ZVMC3JQC7MDNIODUXYHBCHNCGVXAL56UFBEPM4RC) — [deploy tx](https://stellar.expert/explorer/testnet/tx/ebbf06a947c1291c63e93f03d70648571eacb7b07313043adaccb7d8c81aaa1a) and on-chain [`verify(...) → true`](https://stellar.expert/explorer/testnet/tx/b133de953dd09e53f7a524d74faf7ceb593f647538e3d9526d00d2ad5a10b62d) (wrong message → `false`). Reproduce from [`2026-06-07-verifier-testnet.json`](./docs/audit/e2e-receipts/2026-06-07-verifier-testnet.json). |
 | Web demo | Reference frontend — **out of audit scope**; functional on testnet |
-| End-to-end testnet flow | One full Falcon-signed transfer landed on testnet (see receipt) |
+| End-to-end testnet flow | One full Falcon-signed transfer landed on testnet via the smart account (see receipt) |
 | Mainnet | Not yet recommended — pending audit completion and TM-002 follow-up |
 
 ## Roadmap

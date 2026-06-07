@@ -178,20 +178,16 @@ impl CustomAccountInterface for FalconSmartAccount {
             return Err(Error::InvalidSignatureSize);
         }
 
+        // Bulk host->guest copies. The size gates above guarantee
+        // `pubkey.len() == 897` and `sig_len in [42,666]`, so each destination
+        // slice matches its source length and `copy_into_slice` (which panics
+        // only on a length mismatch) cannot trap __check_auth.
         let mut pk_bytes = [0u8; FALCON_512_PUBKEY_SIZE];
-        for i in 0..FALCON_512_PUBKEY_SIZE {
-            pk_bytes[i] = pubkey
-                .get(i as u32)
-                .ok_or(Error::InvalidPublicKeySize)?;
-        }
+        pubkey.copy_into_slice(&mut pk_bytes);
 
         let sig_len_usize = sig_len as usize;
         let mut sig_bytes = [0u8; FALCON_SIG_MAX_SIZE as usize];
-        for i in 0..sig_len_usize {
-            sig_bytes[i] = signature
-                .get(i as u32)
-                .ok_or(Error::InvalidSignatureSize)?;
-        }
+        signature.copy_into_slice(&mut sig_bytes[..sig_len_usize]);
 
         // Build the domain-separated message:
         //     DOMAIN_SEPARATOR || signature_payload.to_array()

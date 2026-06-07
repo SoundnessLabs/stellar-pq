@@ -17,12 +17,16 @@
 //! sm = sig_len (2 bytes, big-endian) || nonce (40 bytes) || message || sig_data
 //! ```
 //!
-//! To verify with our implementation, we reconstruct the standard Falcon signature:
+//! To verify with our implementation, we reconstruct the standard Falcon
+//! signature, preserving the original header byte from the KAT:
 //! ```text
-//! signature = header (0x39) || nonce (40 bytes) || sig_data
+//! signature = header (0x29 in these NIST vectors) || nonce (40 bytes) || sig_body
 //! ```
 //!
-//! The header byte 0x39 = 0x30 | 9 indicates compressed format for Falcon-512 (logn=9).
+//! The header low nibble is 9 (logn for Falcon-512). The NIST Round-3 KAT
+//! vectors use high nibble 0x2X with a *variable-length* compressed body; the
+//! verifier also accepts 0x3X (PQClean / falcon-wasm). See the verifier's
+//! module docs for the full format policy.
 
 use soroban_falcon_verifier::FalconVerifier;
 
@@ -173,9 +177,9 @@ fn test_kat_vector_0() {
     assert_eq!(pk.len(), 897, "Public key should be 897 bytes");
     assert_eq!(msg.len(), vector.mlen.unwrap(), "Message length mismatch");
 
-    // Verify signature structure - header encodes format and logn
-    // Low nibble should be 9 (logn for Falcon-512)
-    // High nibble: 0x20 = padded, 0x30 = compressed, 0x50 = CT
+    // Verify signature structure: low nibble = logn = 9; high nibble selects
+    // the encoding family. The NIST KAT vectors use 0x2X (variable-length
+    // compressed); the verifier also accepts 0x3X. (0x5X CT is out of scope.)
     assert_eq!(
         sig[0] & 0x0F,
         9,
@@ -184,7 +188,7 @@ fn test_kat_vector_0() {
     let format = sig[0] & 0xF0;
     assert!(
         format == 0x20 || format == 0x30 || format == 0x50,
-        "Signature header should indicate valid format (padded=0x2x, compressed=0x3x, CT=0x5x)"
+        "Signature header high nibble should be 0x2X/0x3X (or 0x5X CT)"
     );
 
     println!("Vector 0:");
@@ -213,6 +217,58 @@ fn test_kat_wrong_message() {
 
     let result = FalconVerifier::verify_512(&pk, wrong_msg, &sig);
     assert!(!result, "Verification should fail with wrong message");
+}
+
+/// DEC-002 regression: a natural-length signature inflated with arbitrary
+/// (non-666) zero padding must be REJECTED, while padding to exactly the
+/// 666-byte padded size with a zero tail is ACCEPTED. This closes the
+/// unbounded-length malleability the audit flagged (DEC-002).
+#[test]
+fn test_dec002_arbitrary_padding_rejected() {
+    let kat_content = include_str!("falcon512-KAT.rsp");
+    let vectors = parse_kat_file(kat_content);
+    let vector = &vectors[0];
+    let pk = vector.public_key();
+    let msg = vector.message();
+    let sig = vector.extract_falcon_signature();
+
+    // Sanity: the natural-length signature verifies, and is shorter than the
+    // 666-byte padded size (so we have room to test both directions).
+    assert!(
+        FalconVerifier::verify_512(&pk, &msg, &sig),
+        "natural KAT signature should verify"
+    );
+    assert!(
+        sig.len() < 666,
+        "KAT vector 0 is expected to be shorter than the padded size"
+    );
+
+    // (1) Arbitrary zero padding to a non-666 length must be rejected.
+    let mut inflated = sig.clone();
+    inflated.extend_from_slice(&[0u8; 4]);
+    assert_ne!(inflated.len(), 666);
+    assert!(
+        !FalconVerifier::verify_512(&pk, &msg, &inflated),
+        "DEC-002: arbitrarily zero-padded signature must be rejected"
+    );
+
+    // (2) Padding to exactly the 666-byte padded size (zero tail) is allowed.
+    let mut padded = sig.clone();
+    padded.resize(666, 0u8);
+    assert_eq!(padded.len(), 666);
+    assert!(
+        FalconVerifier::verify_512(&pk, &msg, &padded),
+        "exactly-666 zero-padded signature should still verify"
+    );
+
+    // (3) A non-zero byte anywhere in the padded tail must be rejected.
+    let mut tampered = sig.clone();
+    tampered.resize(666, 0u8);
+    *tampered.last_mut().unwrap() = 1;
+    assert!(
+        !FalconVerifier::verify_512(&pk, &msg, &tampered),
+        "non-zero padding tail must be rejected"
+    );
 }
 
 /// Test that verification fails with wrong public key.

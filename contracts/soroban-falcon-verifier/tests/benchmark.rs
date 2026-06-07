@@ -59,6 +59,44 @@ fn benchmark_verify_falcon512() {
 }
 
 #[test]
+fn benchmark_verify_max_message() {
+    // DRS-2: worst-case gas at the largest accepted message size
+    // (FALCON_MAX_MESSAGE_SIZE = 16384). This exercises the full path the
+    // contract actually admits: the 16 KiB host->guest copy plus the 16 KiB
+    // SHAKE256 absorb, then decode + NTT. The signature is the "Hello, Falcon!"
+    // vector, so verification returns `false` (the 16 KiB message does not
+    // match) -- but every expensive step still executes, which is exactly the
+    // worst case we want to measure.
+    let env = Env::default();
+    let contract_id = env.register(FalconVerifierContract, ());
+    let client = FalconVerifierContractClient::new(&env, &contract_id);
+
+    let pubkey_bytes = hex::decode(TEST_PUBKEY_HEX).expect("Invalid pubkey hex");
+    let sig_bytes = hex::decode(TEST_SIGNATURE_HEX).expect("Invalid signature hex");
+
+    // Largest accepted message: 16384 bytes.
+    let msg_bytes = [0x41u8; 16384];
+
+    let pubkey = Bytes::from_slice(&env, &pubkey_bytes);
+    let message = Bytes::from_slice(&env, &msg_bytes);
+    let signature = Bytes::from_slice(&env, &sig_bytes);
+
+    env.cost_estimate().budget().reset_default();
+
+    let _result = client.verify(&pubkey, &message, &signature);
+
+    let budget = env.cost_estimate().budget();
+    println!("\n=== Falcon-512 Verification (16384-byte Message, worst case) ===");
+    println!("Message: 16384 bytes (FALCON_MAX_MESSAGE_SIZE)");
+    println!("Signature: {} bytes", sig_bytes.len());
+    let cpu_insns = budget.cpu_instruction_cost();
+    println!("CPU Instructions: {}", cpu_insns);
+    let mem_bytes = budget.memory_bytes_cost();
+    println!("Memory Bytes: {}", mem_bytes);
+    println!("=== End Benchmark ===\n");
+}
+
+#[test]
 fn benchmark_verify_empty_message() {
     let env = Env::default();
     let contract_id = env.register(FalconVerifierContract, ());

@@ -14,6 +14,14 @@ pub use falcon_512_core::{
     FALCON_SIG_MAX_SIZE, FALCON_SIG_MIN_SIZE, L2_BOUND_512, Q,
 };
 
+// DRS-1: bound the worst-case verify() stack frame at build time. verify()
+// stacks a 16 KiB message buffer + 897 B pubkey + 666 B signature buffer;
+// verify_512 then uses several fixed [u16;512]/[i16;512] arrays. Keep the
+// entry buffers well under the wasm32 shadow-stack budget (1 MiB default).
+const _: () = assert!(
+    FALCON_MAX_MESSAGE_SIZE + FALCON_512_PUBKEY_SIZE + (FALCON_SIG_MAX_SIZE as usize) <= 64 * 1024
+);
+
 #[contract]
 pub struct FalconVerifierContract;
 
@@ -43,37 +51,22 @@ impl FalconVerifierContract {
             return false;
         }
 
-        // Per-byte copies use `let Some(b) = ... else { return false; }`
-        // rather than `unwrap()`. Bounds were enforced by the size checks
-        // above, so `get()` should always be `Some` here -- but a verify()
-        // that returns `false` on malformed input is a strictly safer
-        // failure mode than a host trap, and matches the smart-account's
-        // panic-free __check_auth pattern.
+        // Bulk host->guest copies (DRS-3 optimization). The length gates above
+        // guarantee `public_key.len() == 897`, `sig_len in [42,666]`, and
+        // `msg_len <= 16384`, so each destination slice is sized to exactly the
+        // source length; `copy_into_slice` only panics on a length mismatch,
+        // which cannot occur here. One metered host call each, versus up to
+        // ~17.9 KB of individual `get()` dispatches.
         let mut pk_bytes = [0u8; FALCON_512_PUBKEY_SIZE];
-        for i in 0..FALCON_512_PUBKEY_SIZE {
-            let Some(b) = public_key.get(i as u32) else {
-                return false;
-            };
-            pk_bytes[i] = b;
-        }
+        public_key.copy_into_slice(&mut pk_bytes);
 
         let sig_len_usize = sig_len as usize;
         let mut sig_bytes = [0u8; FALCON_SIG_MAX_SIZE as usize];
-        for i in 0..sig_len_usize {
-            let Some(b) = signature.get(i as u32) else {
-                return false;
-            };
-            sig_bytes[i] = b;
-        }
+        signature.copy_into_slice(&mut sig_bytes[..sig_len_usize]);
 
         let msg_len_usize = msg_len as usize;
         let mut msg_bytes = [0u8; FALCON_MAX_MESSAGE_SIZE];
-        for i in 0..msg_len_usize {
-            let Some(b) = message.get(i as u32) else {
-                return false;
-            };
-            msg_bytes[i] = b;
-        }
+        message.copy_into_slice(&mut msg_bytes[..msg_len_usize]);
 
         FalconVerifier::verify_512(
             &pk_bytes,

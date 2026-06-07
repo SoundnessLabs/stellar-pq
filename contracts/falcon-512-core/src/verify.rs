@@ -21,10 +21,29 @@
 //!
 //! # Accepted signature formats
 //!
-//! Only the **compressed** (`0x39`) and **padded** (`0x29`) signature formats
-//! are accepted. The constant-time (CT, `0x59`) format is 809 bytes and is
-//! rejected by the signature-size gate; the code path has been removed so
-//! there is no dispatch to a never-reached decoder.
+//! The header byte's low nibble must equal `logn = 9`. The high nibble
+//! selects the encoding family and **both `0x2X` and `0x3X` are accepted**,
+//! because real Falcon-512 signers disagree on the nibble: the official NIST
+//! Round-3 KAT vectors (and `falcon.py`) emit `0x29` with a *variable-length*
+//! compressed body, while PQClean `falcon-512/clean` and this project's
+//! `falcon-wasm` signer emit `0x39` for compressed and `0x29` for the
+//! 666-byte padded form. The verifier therefore treats the high nibble
+//! loosely and enforces canonicity on the *body* instead (see `verify_512`):
+//!
+//!   * the compressed body must decode exactly (no leftover bytes), **or**
+//!   * the signature must be the fixed padded size
+//!     (`FALCON_512_SIG_PADDED_SIZE` = 666 bytes) with an all-zero tail.
+//!
+//! Any other zero-padded length is rejected. The constant-time (CT, `0x5X`)
+//! format is 809 bytes and is rejected by the size gate; its decoder path
+//! does not exist.
+//!
+//! Because both the compressed and padded encodings of the same underlying
+//! signature verify, the scheme is EUF-CMA (no forgery) but not strongly
+//! non-malleable at the byte level. Consumers that need a unique signature
+//! identifier must not key on the raw bytes; the smart-account layer is
+//! unaffected because Soroban's `signature_payload` (not the signature bytes)
+//! is the replay key.
 //!
 //! # References
 //!
@@ -35,8 +54,8 @@ use crate::ntt::{
     field_sub, ntt_forward, ntt_inverse, poly_pointwise_mul, poly_prepare_for_mul, poly_sub,
 };
 use crate::{
-    FALCON_512_N, FALCON_512_PUBKEY_SIZE, FALCON_MAX_MESSAGE_SIZE, FALCON_SIG_MAX_SIZE,
-    FALCON_SIG_MIN_SIZE, L2_BOUND_512, Q,
+    FALCON_512_N, FALCON_512_PUBKEY_SIZE, FALCON_512_SIG_PADDED_SIZE, FALCON_MAX_MESSAGE_SIZE,
+    FALCON_SIG_MAX_SIZE, FALCON_SIG_MIN_SIZE, L2_BOUND_512, Q,
 };
 
 /// Falcon-512 signature verifier.
@@ -83,21 +102,18 @@ impl FalconVerifier {
         if (sig_header & 0x0F) != FALCON_512_LOGN {
             return false;
         }
-        // Falcon spec §3.11.1 reserves the high nibble of the header byte
-        // for the encoding format:
-        //   0x2X — padded encoding (compressed payload + zero tail)
-        //   0x3X — compressed encoding (no padding)
-        //   0x5X — CT encoding (constant-time, fixed-size)
-        // The verifier's canonical decoder handles compressed payloads and
-        // tolerates a zero tail, so both 0x2X and 0x3X are accepted; the
-        // post-decode trailing-byte check (§ canonicity loop below) ensures
-        // any padded form must indeed have only zero bytes after the
-        // compressed payload, preventing malleability.
+        // The high nibble of the header selects the encoding family. Real
+        // signers disagree on which nibble means what (see the module-level
+        // "Accepted signature formats" docs): the NIST Round-3 KAT and
+        // falcon.py use 0x2X for variable-length compressed signatures, while
+        // PQClean and the falcon-wasm signer use 0x3X for compressed and 0x2X
+        // for the 666-byte padded form. We therefore accept BOTH 0x2X and
+        // 0x3X and do not bind the nibble to a particular body length;
+        // canonicity is enforced on the decoded body instead (Step 5 below).
         //
-        // 0x5X (CT) is deliberately rejected by this check; the size gate
-        // above also catches it because a Falcon-512 CT signature is 809
-        // bytes (> FALCON_SIG_MAX_SIZE = 666), giving two layers of
-        // defense. Reference: Falcon NIST Round-3 submission §3.11.1.
+        // 0x5X (CT, 809 bytes) is rejected here and, redundantly, by the size
+        // gate above (809 > FALCON_SIG_MAX_SIZE = 666). Reference: Falcon NIST
+        // Round-3 submission §3.11.1.
         let fmt = sig_header & 0xF0;
         if fmt != 0x20 && fmt != 0x30 {
             return false;
@@ -120,11 +136,22 @@ impl FalconVerifier {
             return false;
         }
 
-        // Canonicity: any bytes beyond the compressed encoding must be zero.
-        // A naturally-compressed signature satisfies `decoded_len ==
-        // sig_data.len()` and the loop is empty; a padded-format signature has
-        // its tail filled with zeros. Non-zero trailing bytes indicate either a
-        // corrupted signature or a non-canonical encoding and are rejected.
+        // Canonicity (DEC-002): the body must either decode exactly (natural
+        // variable-length compressed, `decoded_len == sig_data.len()`) or be
+        // the fixed padded form whose TOTAL signature length is
+        // `FALCON_512_SIG_PADDED_SIZE` (666 bytes) with an all-zero tail. Any
+        // other zero-padded length is non-canonical and rejected, so a
+        // signature cannot be silently inflated to an arbitrary size in
+        // (natural, 666). This matches the reference's exact-consumption rule
+        // and removes the unbounded-padding malleability while still accepting
+        // every real signer (NIST KAT/falcon.py natural, falcon-wasm padded).
+        let total_sig_len = signature.len(); // header(1) + nonce(40) + body
+        let is_natural = decoded_len == sig_data.len();
+        let is_padded = total_sig_len == FALCON_512_SIG_PADDED_SIZE;
+        if !is_natural && !is_padded {
+            return false;
+        }
+        // Trailing bytes (padded form only) must be zero.
         for i in decoded_len..sig_data.len() {
             if sig_data[i] != 0 {
                 return false;
