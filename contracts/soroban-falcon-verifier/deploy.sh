@@ -26,7 +26,7 @@ OPTIMIZED_WASM_PATH="$WORKSPACE_ROOT/target/wasm32v1-none/release/soroban_falcon
 TESTNET_RPC="https://soroban-testnet.stellar.org"
 TESTNET_PASSPHRASE="Test SDF Network ; September 2015"
 
-MAINNET_RPC="https://soroban.stellar.org"
+MAINNET_RPC="https://mainnet.sorobanrpc.com"
 MAINNET_PASSPHRASE="Public Global Stellar Network ; September 2015"
 
 # =============================================================================

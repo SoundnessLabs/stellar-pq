@@ -31,7 +31,7 @@ FALCON_512_PUBKEY_SIZE=897
 TESTNET_RPC="https://soroban-testnet.stellar.org"
 TESTNET_PASSPHRASE="Test SDF Network ; September 2015"
 
-MAINNET_RPC="https://soroban.stellar.org"
+MAINNET_RPC="https://mainnet.sorobanrpc.com"
 MAINNET_PASSPHRASE="Public Global Stellar Network ; September 2015"
 
 # =============================================================================

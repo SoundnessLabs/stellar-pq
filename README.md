@@ -16,7 +16,7 @@ next.
 > production or with real funds until a professional security audit has
 > been completed. A formal review under the
 > [Stellar SCF Soroban Security Audit Bank](https://stellar.gitbook.io/scf-handbook/supporting-programs/audit-bank/official-rules)
-> is being scheduled — see [Audit readiness](#audit-readiness) below.
+> is being scheduled — see the audit pack in [`docs/audit/`](./docs/audit/README.md).
 
 ## What's here
 
@@ -27,7 +27,7 @@ next.
 | [`contracts/soroban-falcon-smart-account`](./contracts/soroban-falcon-smart-account) | Soroban `CustomAccountInterface` that authorizes transactions with a Falcon-512 signature over a domain-separated payload. Supports `__constructor(falcon_pubkey)` and `rotate_key`. |
 | [`web-demo`](./web-demo) | Vite + React reference frontend driving the smart account — deploys, funds, and submits Falcon-signed transfers from the browser using a vendored `falcon-wasm` signer. **Out of audit scope:** frontends are user-replaceable; the contract must remain secure under any signer (see [`docs/audit/threat-model.md`](./docs/audit/threat-model.md)). |
 | [`e2e`](./e2e) | Reproducible testnet harness — produces an audit-grade JSON receipt with a real Falcon-signed transaction. See [`e2e/README.md`](./e2e/README.md). |
-| [`docs/audit`](./docs/audit) | Pre-audit security artifacts: threat model, constant-time analysis, dependency / lint scan, remediation log, and committed e2e receipts. |
+| [`docs/audit`](./docs/audit/README.md) | Complete pre-audit security pack — threat model, constant-time analysis, dependency / lint / Scout scans, remediation log, optimization report, raw tool outputs, and committed e2e receipts. Indexed in [`docs/audit/README.md`](./docs/audit/README.md). |
 
 The verifier implements the **NIST Round-3 Falcon-512 submission** (the
 "original Falcon" design) and is validated against the 100 official
@@ -101,30 +101,17 @@ plugin or its analyzer script — see `docs/audit/ct-analysis/run.sh`.
 ├── web-demo/                       # Vite + React demo of the smart account
 ├── e2e/                            # reproducible testnet harness (Bun)
 └── docs/
-    └── audit/
-        ├── threat-model.md             # STRIDE model, 24 threats, code-cited mitigations
-        ├── constant-time-analysis.md   # Trail of Bits CT scan + F-001 remediation
-        ├── dependency-and-lint-scan.md # cargo audit + clippy report
-        ├── remediation-log.md          # formal vulnerability registry
-        ├── ct-analysis/                # standalone fixtures + run.sh
-        ├── dep-scan/                   # captured raw outputs + run.sh
-        └── e2e-receipts/               # committed testnet run receipts
+    └── audit/                          # pre-audit security pack — see docs/audit/README.md
 ```
 
 ## Audit readiness
 
 The repo is being prepared for an SCF Soroban Security Audit Bank
-engagement. The full pre-audit pack lives under
-[`docs/audit/`](./docs/audit/):
-
-| Document | What it covers |
-| --- | --- |
-| [`threat-model.md`](./docs/audit/threat-model.md) | STRIDE analysis using Stellar's 4-section template. 24 concrete threats across S/T/R/I/D/E, each mitigation cites `file:line` against committed code. Includes the system data flow diagram and trust boundaries. |
-| [`constant-time-analysis.md`](./docs/audit/constant-time-analysis.md) | Trail of Bits CT analyzer scan of `falcon-512-core` across `{arm64, x86_64} × {-Oz, -O3}`. One finding (F-001 — UDIV in `hash_to_point`) was identified and remediated in the same commit; current scan is clean on every (arch, opt) cell. |
-| [`dependency-and-lint-scan.md`](./docs/audit/dependency-and-lint-scan.md) | `cargo audit` against each crate's `Cargo.lock` plus `cargo clippy` across all targets. Three transitive upstream advisories surfaced (none reachable in our usage); a fourth (`keccak 0.1.5`) was remediated by a lockfile bump. No security-relevant clippy findings. |
-| [`remediation-log.md`](./docs/audit/remediation-log.md) | Formal vulnerability registry: per-finding ID, severity, status, owner, fix commit, and reference. Includes the application-level commitment to remediate audit-firm critical / high / medium findings within 20 business days. |
-| [`optimization-report.md`](./docs/audit/optimization-report.md) | Gas & performance optimization pass: per-call verification cost is **≈ 13 k CPU instructions (≈ 0.013 % of the per-tx budget), down from ≈ 397 k** after the bulk host-copy optimization; covers the NTT / branch-free-arithmetic / zero-heap / bulk-copy wins, a worst-case 16 KB-message measurement (≈ 15 k), and the contract-size reduction. All numbers reproducible. |
-| [`e2e-receipts/`](./docs/audit/e2e-receipts/) | Committed JSON receipts from real testnet runs — contract id, transaction hash, and the on-chain explorer URL an auditor can click and independently verify. [`2026-05-05-testnet.json`](./docs/audit/e2e-receipts/2026-05-05-testnet.json) lands a 666-byte Falcon-signed transfer via the **smart account** (`CANNCY2STTSAR7UQLZ7MVKQNMQ45WCDLJ67ILTOVSO6K3BJTULXSYPC4`); [`2026-06-07-verifier-testnet.json`](./docs/audit/e2e-receipts/2026-06-07-verifier-testnet.json) deploys the **standalone verifier** (`CDDZZJ3B3BMKBPJ7ZVMC3JQC7MDNIODUXYHBCHNCGVXAL56UFBEPM4RC`) and records a real on-chain `verify(pk, msg, sig) → true`. |
+engagement. The complete pre-audit pack — threat model, constant-time
+analysis, dependency / lint / Scout scans, remediation log,
+optimization report, raw tool outputs, and committed e2e receipts for
+every on-chain deployment — is indexed in
+[`docs/audit/README.md`](./docs/audit/README.md).
 
 ## Status
 
@@ -134,10 +121,11 @@ engagement. The full pre-audit pack lives under
 | Test coverage | **40+ tests across the 3 crates** (full suite green), including a `tests/kat.rs` suite that replays **all 100 official NIST Round-3 Falcon-512 KAT vectors** (`tests/falcon512-KAT.rsp`), wrong-message / wrong-public-key negatives, a **DEC-002 malleability regression test**, and a 16 KB worst-case gas benchmark |
 | Smart-account contract | Domain-separated `__check_auth`, panic-free runtime paths, key rotation, KAT + integration + benchmark tests |
 | Standalone verifier contract | KAT + integration + benchmark tests; deterministic Soroban env-test snapshots committed under `test_snapshots/`; includes a DEC-002 malleability regression test and a 16 KB worst-case gas benchmark |
-| **Deployed (testnet)** | Standalone verifier live at [`CDDZZJ3B3BMKBPJ7ZVMC3JQC7MDNIODUXYHBCHNCGVXAL56UFBEPM4RC`](https://stellar.expert/explorer/testnet/contract/CDDZZJ3B3BMKBPJ7ZVMC3JQC7MDNIODUXYHBCHNCGVXAL56UFBEPM4RC) — [deploy tx](https://stellar.expert/explorer/testnet/tx/ebbf06a947c1291c63e93f03d70648571eacb7b07313043adaccb7d8c81aaa1a) and on-chain [`verify(...) → true`](https://stellar.expert/explorer/testnet/tx/b133de953dd09e53f7a524d74faf7ceb593f647538e3d9526d00d2ad5a10b62d) (wrong message → `false`). Reproduce from [`2026-06-07-verifier-testnet.json`](./docs/audit/e2e-receipts/2026-06-07-verifier-testnet.json). |
+| **Deployed (testnet)** | Standalone verifier live at [`CDDZZJ3B3BMKBPJ7ZVMC3JQC7MDNIODUXYHBCHNCGVXAL56UFBEPM4RC`](https://stellar.expert/explorer/testnet/contract/CDDZZJ3B3BMKBPJ7ZVMC3JQC7MDNIODUXYHBCHNCGVXAL56UFBEPM4RC) — transactions and receipt in [`docs/audit/README.md`](./docs/audit/README.md#on-chain-deployments). |
+| **Deployed (mainnet)** | Standalone verifier live at [`CA5RY3BUC4AXNQ4MJJITOUZVMFO3MW3CF4743SIAD46CGY4ICSU6J7OY`](https://stellar.expert/explorer/public/contract/CA5RY3BUC4AXNQ4MJJITOUZVMFO3MW3CF4743SIAD46CGY4ICSU6J7OY) — WASM byte-identical to the testnet artifact; transactions and receipt in [`docs/audit/README.md`](./docs/audit/README.md#on-chain-deployments). |
 | Web demo | Reference frontend — **out of audit scope**; functional on testnet |
 | End-to-end testnet flow | One full Falcon-signed transfer landed on testnet via the smart account (see receipt) |
-| Mainnet | Not yet recommended — pending audit completion and TM-002 follow-up |
+| Mainnet | Standalone verifier deployed (see above). **Audit still pending** — production reliance on the verifier, and any smart-account mainnet use, remain not recommended until audit completion and TM-002 follow-up. |
 
 ## Roadmap
 
