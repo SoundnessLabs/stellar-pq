@@ -14,6 +14,30 @@ import {
   getExplorerUrl,
 } from './config'
 
+/**
+ * Domain-separation tag that the Falcon smart-account prepends to the
+ * Soroban-provided `signature_payload` before running Falcon verification.
+ * Keep this byte-for-byte in sync with `DOMAIN_SEPARATOR` in
+ * contracts/soroban-falcon-smart-account/src/lib.rs — changing either side
+ * silently breaks all auth.
+ */
+const SMART_ACCOUNT_DOMAIN_SEPARATOR = new TextEncoder().encode(
+  'soroban-falcon-smart-account-v1',
+)
+
+/**
+ * Construct the byte string the smart account actually verifies Falcon against:
+ * `DOMAIN_SEPARATOR || signature_payload`.
+ */
+function buildSignedMessage(payloadHash: Uint8Array): Uint8Array {
+  const out = new Uint8Array(
+    SMART_ACCOUNT_DOMAIN_SEPARATOR.length + payloadHash.length,
+  )
+  out.set(SMART_ACCOUNT_DOMAIN_SEPARATOR, 0)
+  out.set(payloadHash, SMART_ACCOUNT_DOMAIN_SEPARATOR.length)
+  return out
+}
+
 export interface DeployResult {
   success: boolean
   contractId?: string
@@ -74,7 +98,7 @@ export async function getCurrentLedger(): Promise<number> {
  * Get account sequence number
  */
 export async function getAccountSequence(accountId: string): Promise<string> {
-  const server = new StellarSdk.SorobanRpc.Server(RPC_URL)
+  const server = new StellarSdk.rpc.Server(RPC_URL)
   const account = await server.getAccount(accountId)
   return account.sequenceNumber()
 }
@@ -102,7 +126,7 @@ export async function deploySmartAccount(
   }
 
   try {
-    const server = new StellarSdk.SorobanRpc.Server(RPC_URL)
+    const server = new StellarSdk.rpc.Server(RPC_URL)
     const sourceKeypair = StellarSdk.Keypair.fromSecret(DEMO_SECRET)
     const sourcePublicKey = sourceKeypair.publicKey()
 
@@ -142,14 +166,14 @@ export async function deploySmartAccount(
 
     const simulation = await server.simulateTransaction(transaction)
 
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(simulation)) {
+    if (StellarSdk.rpc.Api.isSimulationError(simulation)) {
       return {
         success: false,
         error: `Simulation failed: ${simulation.error}`,
       }
     }
 
-    const preparedTx = StellarSdk.SorobanRpc.assembleTransaction(
+    const preparedTx = StellarSdk.rpc.assembleTransaction(
       transaction,
       simulation
     ).build()
@@ -167,13 +191,13 @@ export async function deploySmartAccount(
 
     let txResult = await server.getTransaction(sendResult.hash)
     let attempts = 0
-    while (txResult.status === StellarSdk.SorobanRpc.Api.GetTransactionStatus.NOT_FOUND && attempts < 30) {
+    while (txResult.status === StellarSdk.rpc.Api.GetTransactionStatus.NOT_FOUND && attempts < 30) {
       await new Promise(resolve => setTimeout(resolve, 1000))
       txResult = await server.getTransaction(sendResult.hash)
       attempts++
     }
 
-    if (txResult.status === StellarSdk.SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+    if (txResult.status === StellarSdk.rpc.Api.GetTransactionStatus.SUCCESS) {
       const contractIdHash = StellarSdk.hash(
         StellarSdk.xdr.HashIdPreimage.envelopeTypeContractId(
           new StellarSdk.xdr.HashIdPreimageContractId({
@@ -226,7 +250,7 @@ export async function initializeSmartAccount(
   falconPublicKey: Uint8Array
 ): Promise<DeployResult> {
   try {
-    const server = new StellarSdk.SorobanRpc.Server(RPC_URL)
+    const server = new StellarSdk.rpc.Server(RPC_URL)
     const sourceKeypair = StellarSdk.Keypair.fromSecret(DEMO_SECRET)
     const sourcePublicKey = sourceKeypair.publicKey()
 
@@ -248,14 +272,14 @@ export async function initializeSmartAccount(
 
     const simulation = await server.simulateTransaction(transaction)
 
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(simulation)) {
+    if (StellarSdk.rpc.Api.isSimulationError(simulation)) {
       return {
         success: false,
         error: `Simulation failed: ${simulation.error}`,
       }
     }
 
-    const preparedTx = StellarSdk.SorobanRpc.assembleTransaction(
+    const preparedTx = StellarSdk.rpc.assembleTransaction(
       transaction,
       simulation
     ).build()
@@ -273,13 +297,13 @@ export async function initializeSmartAccount(
 
     let txResult = await server.getTransaction(sendResult.hash)
     let attempts = 0
-    while (txResult.status === StellarSdk.SorobanRpc.Api.GetTransactionStatus.NOT_FOUND && attempts < 30) {
+    while (txResult.status === StellarSdk.rpc.Api.GetTransactionStatus.NOT_FOUND && attempts < 30) {
       await new Promise(resolve => setTimeout(resolve, 1000))
       txResult = await server.getTransaction(sendResult.hash)
       attempts++
     }
 
-    if (txResult.status === StellarSdk.SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+    if (txResult.status === StellarSdk.rpc.Api.GetTransactionStatus.SUCCESS) {
       return {
         success: true,
         contractId,
@@ -504,7 +528,7 @@ export async function fundSmartAccount(
  */
 export async function getSmartAccountBalance(contractId: string): Promise<BalanceResult> {
   try {
-    const server = new StellarSdk.SorobanRpc.Server(RPC_URL)
+    const server = new StellarSdk.rpc.Server(RPC_URL)
     const sourceKeypair = StellarSdk.Keypair.fromSecret(DEMO_SECRET)
     const sourcePublicKey = sourceKeypair.publicKey()
 
@@ -525,7 +549,7 @@ export async function getSmartAccountBalance(contractId: string): Promise<Balanc
 
     const simulation = await server.simulateTransaction(transaction)
 
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(simulation)) {
+    if (StellarSdk.rpc.Api.isSimulationError(simulation)) {
       return {
         success: false,
         error: `Simulation failed: ${simulation.error}`,
@@ -585,7 +609,7 @@ export async function transferFromSmartAccount(
   }
 
   try {
-    const server = new StellarSdk.SorobanRpc.Server(RPC_URL)
+    const server = new StellarSdk.rpc.Server(RPC_URL)
     const feePayerKeypair = StellarSdk.Keypair.fromSecret(DEMO_SECRET)
     const feePayerPublicKey = feePayerKeypair.publicKey()
 
@@ -618,7 +642,7 @@ export async function transferFromSmartAccount(
 
     const simulation = await server.simulateTransaction(transaction)
 
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(simulation)) {
+    if (StellarSdk.rpc.Api.isSimulationError(simulation)) {
       updateStep(1, 'error', simulation.error)
       return {
         success: false,
@@ -685,13 +709,17 @@ export async function transferFromSmartAccount(
 
     const preimageXdr = preimage.toXDR()
     const payloadHash = StellarSdk.hash(preimageXdr)
+    // The smart account verifies Falcon against DOMAIN_SEPARATOR || payloadHash.
+    // This must match the on-chain contract; otherwise every transaction fails.
+    const signedMessage = buildSignedMessage(new Uint8Array(payloadHash))
 
     console.log('Preimage XDR length:', preimageXdr.length)
     console.log('Payload hash:', Buffer.from(payloadHash).toString('hex'))
+    console.log('Signed message length:', signedMessage.length)
 
     const { signature: falconSignature } = await signPadded(
       new Uint8Array(0),
-      new Uint8Array(payloadHash),
+      signedMessage,
       falconSeed
     )
 
