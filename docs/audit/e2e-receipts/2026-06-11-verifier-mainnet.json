@@ -24,8 +24,13 @@
   },
   "verify_call_valid": {
     "result": true,
-    "mode": "read-only simulation (not submitted on-chain)",
-    "note": "verify(public_key, message, signature) over the message 0x48656c6c6f2c2046616c636f6e21 (utf8 Hello, Falcon!) returned true via mainnet RPC simulation against the deployed contract."
+    "mode": "submitted on-chain (2026-06-12; first exercised via read-only simulation on 2026-06-11)",
+    "tx_hash": "39559d91354d478fb9b522533b4e4213fdeba0026dbc5e7d1ffe46c9599a2e77",
+    "explorer_url": "https://stellar.expert/explorer/public/tx/39559d91354d478fb9b522533b4e4213fdeba0026dbc5e7d1ffe46c9599a2e77",
+    "ledger": 62992420,
+    "fee_charged_stroops": 17592,
+    "successful": true,
+    "note": "verify(public_key, message, signature) over the message 0x48656c6c6f2c2046616c636f6e21 (utf8 Hello, Falcon!) returned true, recorded on Stellar mainnet at ledger 62992420."
   },
   "verify_call_wrong_message": {
     "result": false,
