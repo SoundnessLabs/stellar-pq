@@ -1,7 +1,7 @@
 # Top-level convenience targets for the stellar-pq workspace.
 #
 # Usage:
-#   make build           # build all three contract WASMs
+#   make build           # build both contract WASMs
 #   make build-account   # build only the smart-account WASM
 #   make test            # cargo test on every crate
 #   make e2e             # run the testnet end-to-end harness (assumes `make build` and e2e/.env)
@@ -11,10 +11,12 @@
 .PHONY: build build-account build-verifier build-core test e2e ct-scan audit-scan scout-scan clean
 
 CRATES := falcon-512-core soroban-falcon-smart-account soroban-falcon-verifier
+# falcon-512-core is an rlib, not a contract -- it links into both WASMs.
+CONTRACTS := soroban-falcon-smart-account soroban-falcon-verifier
 ACCOUNT_WASM := target/wasm32v1-none/release/soroban_falcon_smart_account.wasm
 
 build:
-	@for c in $(CRATES); do \
+	@for c in $(CONTRACTS); do \
 		echo "==> stellar contract build -p $$c"; \
 		(cd contracts/$$c && stellar contract build) || exit $$?; \
 	done
