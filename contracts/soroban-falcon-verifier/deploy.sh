@@ -18,9 +18,9 @@ set -e
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WASM_PATH="$WORKSPACE_ROOT/target/wasm32v1-none/release/soroban_falcon_verifier.wasm"
-OPTIMIZED_WASM_PATH="$WORKSPACE_ROOT/target/wasm32v1-none/release/soroban_falcon_verifier.optimized.wasm"
+TARGET_DIR="$SCRIPT_DIR/target/wasm32v1-none/release"
+WASM_PATH="$TARGET_DIR/soroban_falcon_verifier.wasm"
+OPTIMIZED_WASM_PATH="$TARGET_DIR/soroban_falcon_verifier.optimized.wasm"
 
 # Network configurations
 TESTNET_RPC="https://soroban-testnet.stellar.org"

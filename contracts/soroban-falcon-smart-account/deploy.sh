@@ -20,9 +20,9 @@ set -e
 # =============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WASM_PATH="$WORKSPACE_ROOT/target/wasm32v1-none/release/soroban_falcon_smart_account.wasm"
-OPTIMIZED_WASM_PATH="$WORKSPACE_ROOT/target/wasm32v1-none/release/soroban_falcon_smart_account.optimized.wasm"
+TARGET_DIR="$SCRIPT_DIR/target/wasm32v1-none/release"
+WASM_PATH="$TARGET_DIR/soroban_falcon_smart_account.wasm"
+OPTIMIZED_WASM_PATH="$TARGET_DIR/soroban_falcon_smart_account.optimized.wasm"
 
 # Expected public key size in bytes
 FALCON_512_PUBKEY_SIZE=897
