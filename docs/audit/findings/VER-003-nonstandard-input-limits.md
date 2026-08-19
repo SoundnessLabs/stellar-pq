@@ -3,8 +3,12 @@
 | | |
 | --- | --- |
 | Finding ID | **VER-003** |
+| Veridise issue | **#1291** |
 | Source | Veridise audit report |
-| Severity | Not stated in the delivered report |
+| Severity | **Low** |
+| Likelihood | Likely |
+| Impact | Bad |
+| Reported | 2026-08-19 |
 | Status | **Open** — remediation not yet implemented |
 | Owner | TBD |
 | Affects | [`contracts/falcon-512-core/src/lib.rs`](../../../contracts/falcon-512-core/src/lib.rs) (constants), [`verify.rs`](../../../contracts/falcon-512-core/src/verify.rs) (`verify_512`, `decode_sig_compressed`), [`soroban-falcon-verifier/src/lib.rs`](../../../contracts/soroban-falcon-verifier/src/lib.rs), [`soroban-falcon-smart-account/src/lib.rs`](../../../contracts/soroban-falcon-smart-account/src/lib.rs) |
