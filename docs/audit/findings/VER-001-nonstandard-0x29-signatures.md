@@ -3,8 +3,12 @@
 | | |
 | --- | --- |
 | Finding ID | **VER-001** |
+| Veridise issue | **#1292** |
 | Source | Veridise audit report |
-| Severity | Not stated in the delivered report |
+| Severity | **Medium** |
+| Likelihood | Likely |
+| Impact | Bad |
+| Reported | 2026-08-19 |
 | Status | **Open** — remediation not yet implemented |
 | Owner | TBD |
 | Affects | [`contracts/falcon-512-core/src/verify.rs`](../../../contracts/falcon-512-core/src/verify.rs) (header gate + module docs), verifier and smart-account `tests/kat.rs` |
