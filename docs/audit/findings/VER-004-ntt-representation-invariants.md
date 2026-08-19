@@ -3,8 +3,12 @@
 | | |
 | --- | --- |
 | Finding ID | **VER-004** |
+| Veridise issue | **#1289** |
 | Source | Veridise audit report |
-| Severity | Not stated in the delivered report |
+| Severity | **Warning** |
+| Likelihood | Not Likely |
+| Impact | Bad |
+| Reported | 2026-08-18 |
 | Status | **Open** — remediation not yet implemented |
 | Owner | TBD |
 | Affects | [`contracts/falcon-512-core/src/ntt.rs`](../../../contracts/falcon-512-core/src/ntt.rs) |
