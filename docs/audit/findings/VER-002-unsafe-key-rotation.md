@@ -3,8 +3,12 @@
 | | |
 | --- | --- |
 | Finding ID | **VER-002** |
+| Veridise issue | **#1288** |
 | Source | Veridise audit report |
-| Severity | Not stated in the delivered report |
+| Severity | **Low** |
+| Likelihood | Not Likely |
+| Impact | Protocol Breaking |
+| Reported | 2026-08-18 |
 | Status | **Open** — remediation not yet implemented |
 | Owner | TBD |
 | Affects | [`contracts/soroban-falcon-smart-account/src/lib.rs`](../../../contracts/soroban-falcon-smart-account/src/lib.rs) — `rotate_key` |
