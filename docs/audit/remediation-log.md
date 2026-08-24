@@ -3,8 +3,8 @@
 | | |
 | --- | --- |
 | Project | `stellar-pq` — Falcon-512 smart account on Stellar Soroban |
-| Last updated | 2026-06-07 (multi-agent adversarial audit findings AUD-001..007 landed) |
-| Scope | Issues identified by self-review, threat modeling, constant-time analysis, dependency audit, clippy lints, and a multi-agent adversarial audit (2026-06-07). Pre-engagement findings only — findings produced by the audit firm during the engagement will be tracked in this same file as they are reported. |
+| Last updated | 2026-08-24 (VER-004 fixed — NTT representation-invariant rustdoc) |
+| Scope | Issues identified by self-review, threat modeling, constant-time analysis, dependency audit, clippy lints, a multi-agent adversarial audit (2026-06-07), and the Veridise audit engagement (VER-nnn rows, severities on Veridise's scale). |
 | Standing commitment | Per the Stellar SCF Audit Bank initial-audit terms, all critical, high, and medium severity findings produced by the audit firm will be addressed within 20 business days of the report's delivery, with this log updated to reflect each fix. |
 
 ## Severity definitions
@@ -61,6 +61,7 @@
 | **AUD-005** | Contract wrappers copied `Bytes` inputs byte-by-byte via `Bytes::get(i)` (≈1,563 metered host calls for pubkey+sig), dominating verification cost | Multi-agent audit (DRS-3 / optimization) | Informational (perf) | **Fixed** (bulk `copy_into_slice` after length gate; **396,903 → 12,986 CPU instructions, 30.6×**; panic-free preserved) | gnosed | 2026-06-07 | 2026-06-07 | _pending commit_ | verifier & smart-account `src/lib.rs` |
 | **AUD-006** | 16 KiB message stack buffer was undocumented and the worst-case (max-message) gas was unmeasured | Multi-agent audit (DRS-1 / DRS-2) | Low | **Fixed** (build-time `const` stack-budget assertion; added 16,384-byte worst-case benchmark = 15,033 CPU insns) | gnosed | 2026-06-07 | 2026-06-07 | _pending commit_ | verifier `src/lib.rs`, `tests/benchmark.rs` |
 | **AUD-007** | At the Falcon primitive layer, `hash_to_point` omits the FN-DSA (FIPS 206) bindings: domain-separation byte, context string, and SHA-256(pubkey) absorbed into the challenge (key-binding / BUFF) | Multi-agent audit (H2P-002) | Informational | **Accepted / Roadmap** — implementation targets Round-3 Falcon; application-layer domain separation is supplied by the smart account. FN-DSA conformance tracked in the README Roadmap. | gnosed | 2026-06-07 | — | — | README.md (Roadmap); falcon-512-core/src/verify.rs:311-349 |
+| **VER-004** | Undocumented NTT primitives representation invariants may cause incorrect computations | Veridise audit (issue #1289) | Warning (Veridise scale) | **Fixed** (documentation-only: module-level representation-invariants section in `ntt.rs` defining canonical range / field encoding / polynomial domain, plus per-function rustdoc contracts on all ten primitives, per the recommendation's enumeration) | gnosed | 2026-08-18 | 2026-08-24 | _pending commit_ | [`findings/VER-004-ntt-representation-invariants.md`](findings/VER-004-ntt-representation-invariants.md); [PR #5](https://github.com/SoundnessLabs/stellar-pq/pull/5) |
 
 > **Multi-agent audit (2026-06-07).** A 6-dimension adversarial review (each
 > finding cross-checked by 3 independent verifiers) examined the verification
@@ -137,3 +138,4 @@ F-001 UDIV, the keccak advisory, or a new clippy regression.
 | 2026-05-05 | Initial registry. F-001 + D-001 fixed in-commit. TM-001…003 + CI-001 opened. D-002…004 documented as upstream-tracked. |
 | 2026-05-11 | TM-001 removed: frontends / off-chain signers (including `web-demo` and the vendored `falcon-wasm`) are out of audit scope per the updated threat model. Signer integrity is a wallet-grade concern owned by whichever frontend drives the contract. |
 | 2026-05-11 | Self-review pass surfaced 7 findings (SR-001…007); all fixed pre-engagement. Tests added (`test_rotate_key_*`), `rotate_key` re-ordered (auth first), TTL bumps added, events emit pubkey hash instead of full pubkey, `get_pubkey` returns `Result`, threat-model line references refreshed, `verify.rs` header-gate comment cites Falcon spec §3.11.1. |
+| 2026-08-24 | VER-004 (Veridise #1289) fixed: `falcon-512-core/src/ntt.rs` gains a module-level "Representation invariants" section and rustdoc pre/postconditions on all ten NTT primitives. Documentation-only; no executable code changed. Lands via [PR #5](https://github.com/SoundnessLabs/stellar-pq/pull/5). Related VER-005 (visibility narrowing, `ni` constant) remains open. |

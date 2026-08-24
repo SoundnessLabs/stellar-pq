@@ -5,17 +5,25 @@
 | Finding ID | **VER-004** |
 | Veridise issue | **#1289** |
 | Source | Veridise audit report |
+| Pull request | [SoundnessLabs/stellar-pq#5](https://github.com/SoundnessLabs/stellar-pq/pull/5) |
 | Severity | **Warning** |
 | Likelihood | Not Likely |
 | Impact | Bad |
 | Reported | 2026-08-18 |
-| Status | **Open** — remediation not yet implemented |
-| Owner | TBD |
+| Status | **Fixed** — rustdoc contracts landed 2026-08-24 (documentation-only) |
+| Owner | gnosed |
 | Affects | [`contracts/falcon-512-core/src/ntt.rs`](../../../contracts/falcon-512-core/src/ntt.rs) |
 | Related | **VER-005** items 7 and 8 (visibility narrowing and the `ni` constant, same file) |
 
-> **Tracking stub.** This document records the finding and the agreed
-> remediation. No code change lands in this PR.
+> **Remediated 2026-08-24.** Lands via
+> [PR #5](https://github.com/SoundnessLabs/stellar-pq/pull/5)
+> (`audit/ver-004-ntt-representation-invariants`), which previously held
+> only this tracking stub. All items in the checklist below landed as a
+> documentation-only change to `ntt.rs`: a module-level "Representation
+> invariants" section defines the three axes (canonical range, field
+> encoding, polynomial domain), and each of the ten primitives carries
+> rustdoc stating its preconditions and postconditions exactly as
+> enumerated in the recommendation. No executable code changed.
 
 ## Finding as reported
 
@@ -76,27 +84,38 @@ clearly document their input and output invariants:
    the evaluation domain. The encoding will depend on the encoding of the
    inputs.
 
-## Planned remediation
+## Remediation (landed 2026-08-24)
 
-Documentation-only change. Add rustdoc to each of the nine primitives stating
-its preconditions (range, polynomial domain, field encoding) and its
-postconditions, exactly as enumerated above.
+Documentation-only change. Rustdoc added to each primitive stating its
+preconditions (range, polynomial domain, field encoding) and its
+postconditions, exactly as enumerated above. Line references below are
+post-change.
 
-- [ ] `field_add` — `ntt.rs:91`
-- [ ] `field_sub` — `ntt.rs:97`
-- [ ] `field_halve` — `ntt.rs:103`
-- [ ] `montgomery_mul` — `ntt.rs:109`
-- [ ] `ntt_forward` — `ntt.rs:117`
-- [ ] `ntt_inverse` — `ntt.rs:143`
-- [ ] `poly_to_montgomery` — `ntt.rs:180`
-- [ ] `poly_pointwise_mul` — `ntt.rs:186`
-- [ ] `poly_sub` — `ntt.rs:192`
-- [ ] `poly_prepare_for_mul` — `ntt.rs:198`
-- [ ] Add a module-level section to `ntt.rs` defining the three axes once
+- [x] `field_add` — `ntt.rs:117`
+- [x] `field_sub` — `ntt.rs:125`
+- [x] `field_halve` — `ntt.rs:133`
+- [x] `montgomery_mul` — `ntt.rs:148`
+- [x] `ntt_forward` — `ntt.rs:162`
+- [x] `ntt_inverse` — `ntt.rs:194`
+- [x] `poly_to_montgomery` — `ntt.rs:235`
+- [x] `poly_pointwise_mul` — `ntt.rs:251`
+- [x] `poly_sub` — `ntt.rs:260`
+- [x] `poly_prepare_for_mul` — `ntt.rs:270`
+- [x] Add a module-level section to `ntt.rs` defining the three axes once
       (canonical vs. non-canonical representative, coefficient vs. evaluation
       domain, natural vs. Montgomery encoding) so the per-function docs can
       reference the vocabulary instead of redefining it ten times.
-- [ ] Add a **VER-004** row to [`remediation-log.md`](../remediation-log.md).
+- [x] Add a **VER-004** row to [`remediation-log.md`](../remediation-log.md).
+
+Beyond the auditor's enumeration, the docs also record two facts the code
+cannot show: canonical inputs always satisfy `montgomery_mul`'s
+`x·y < 2^16·Q` bound (since `Q² < 2^16·Q`), and evaluation-domain entries
+use the bit-reversed index order of the Falcon reference implementation,
+consistently across `ntt_forward`, `ntt_inverse`, and
+`poly_pointwise_mul`. For item 9, the docs additionally note the concrete
+encoding combination the verifier uses (natural `f`, Montgomery `g` from
+`poly_prepare_for_mul`, natural result) and that two natural-encoded
+operands are not a supported combination.
 
 ## Repository notes
 
@@ -106,7 +125,9 @@ from outside the crate — **VER-005 item 7** asks for the same functions to be
 narrowed to the minimum visibility their callers need. The two findings should
 be implemented together or in a deliberate order: narrowing visibility first
 reduces the blast radius, and documenting the invariants is what makes the
-remaining public surface safe to use.
+remaining public surface safe to use. The order chosen was documentation
+first (this fix); the contracts apply unchanged to whatever visibility
+VER-005 item 7 settles on, so narrowing later requires no doc rework.
 
 Note that documenting a precondition is not enforcing it. If the team wants the
 invariants checked rather than merely stated, that is a separate decision with
