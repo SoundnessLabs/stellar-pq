@@ -1,23 +1,17 @@
-//! Falcon-512 Signature Verification
+//! Falcon-512 signature verification.
 //!
-//! # Overview
+//! Falcon is a lattice-based post-quantum signature scheme built on NTRU
+//! lattices and the hash-and-sign paradigm. NIST selected it for
+//! standardization.
 //!
-//! Falcon is a lattice-based post-quantum signature scheme built on the
-//! "hash-and-sign" paradigm using NTRU lattices. It was selected by NIST
-//! for standardization as a post-quantum digital signature algorithm.
-//!
-//! # Verification Algorithm
+//! # Verification algorithm
 //!
 //! Given a public key `h`, message `m`, and signature `(r, s)`:
 //!
-//! 1. **Hash to point**: Compute challenge c = H(r || m) mod q
-//!    where H is SHAKE256 with rejection sampling to get uniform elements in Z_q
-//!
-//! 2. **Recover s1**: Compute s1 = c - s·h mod q
-//!    where multiplication is in the ring Z_q[X]/(X^n + 1)
-//!
-//! 3. **Verify norm**: Check that ||(s1, s)|| ≤ bound
-//!    The signature is valid iff the L2 norm of (s1, s) is small enough
+//! 1. Hash to a point: `c = H(r || m) mod q`, where `H` is SHAKE256 with
+//!    rejection sampling, so the coefficients come out uniform in `Z_q`.
+//! 2. Recover `s1 = c - s·h mod q`, multiplying in `Z_q[X]/(X^n + 1)`.
+//! 3. Accept only if the L2 norm of `(s1, s)` is within the bound.
 //!
 //! # Accepted signature formats
 //!
@@ -30,8 +24,8 @@
 //! 666-byte padded form. The verifier therefore treats the high nibble
 //! loosely and enforces canonicity on the *body* instead (see `verify_512`):
 //!
-//!   * the compressed body must decode exactly (no leftover bytes), **or**
-//!   * the signature must be the fixed padded size
+//!   * the compressed body decodes exactly, with no leftover bytes, or
+//!   * the signature is the fixed padded size
 //!     (`FALCON_512_SIG_PADDED_SIZE` = 666 bytes) with an all-zero tail.
 //!
 //! Any other zero-padded length is rejected. The constant-time (CT, `0x5X`)
@@ -58,22 +52,16 @@ use crate::{
     FALCON_SIG_MAX_SIZE, FALCON_SIG_MIN_SIZE, L2_BOUND_512, Q,
 };
 
-/// Falcon-512 signature verifier.
-///
-/// This struct provides static methods for signature verification.
-/// It is stateless and all methods can be called without instantiation.
+/// Falcon-512 signature verifier. Stateless; all methods are associated
+/// functions.
 pub struct FalconVerifier;
 
 impl FalconVerifier {
     /// Verifies a Falcon-512 signature.
     ///
-    /// # Arguments
-    /// * `pubkey` - 897-byte Falcon-512 public key
-    /// * `message` - The message that was signed; must be ≤ `FALCON_MAX_MESSAGE_SIZE` bytes
-    /// * `signature` - The signature bytes (compressed or padded format only)
-    ///
-    /// # Returns
-    /// `true` if the signature is valid, `false` otherwise.
+    /// Takes the 897-byte public key, the signed message (at most
+    /// `FALCON_MAX_MESSAGE_SIZE` bytes), and a compressed or padded
+    /// signature. Returns `false` on any failure, and never panics.
     pub fn verify_512(pubkey: &[u8], message: &[u8], signature: &[u8]) -> bool {
         // Step 1: Validate public key format
         if pubkey.len() != FALCON_512_PUBKEY_SIZE {
@@ -85,10 +73,9 @@ impl FalconVerifier {
             return false;
         }
 
-        // Bound the message length defensively. Callers must enforce this too,
-        // because the host-side `Bytes` wrapper may have been copied into a
-        // fixed-size buffer before reaching this function; allowing a longer
-        // slice here would mask that bug.
+        // Callers gate this too. Repeated here because the caller may have
+        // copied into a fixed buffer already, and a longer slice would hide
+        // the truncation.
         if message.len() > FALCON_MAX_MESSAGE_SIZE {
             return false;
         }
@@ -136,15 +123,10 @@ impl FalconVerifier {
             return false;
         }
 
-        // Canonicity (DEC-002): the body must either decode exactly (natural
-        // variable-length compressed, `decoded_len == sig_data.len()`) or be
-        // the fixed padded form whose TOTAL signature length is
-        // `FALCON_512_SIG_PADDED_SIZE` (666 bytes) with an all-zero tail. Any
-        // other zero-padded length is non-canonical and rejected, so a
-        // signature cannot be silently inflated to an arbitrary size in
-        // (natural, 666). This matches the reference's exact-consumption rule
-        // and removes the unbounded-padding malleability while still accepting
-        // every real signer (NIST KAT/falcon.py natural, falcon-wasm padded).
+        // Canonicity: the body must decode exactly, or be the 666-byte
+        // padded form with a zero tail. Any other padded length is rejected,
+        // so a signature cannot be re-encoded at an arbitrary length in
+        // between and still verify.
         let total_sig_len = signature.len(); // header(1) + nonce(40) + body
         let is_natural = decoded_len == sig_data.len();
         let is_padded = total_sig_len == FALCON_512_SIG_PADDED_SIZE;
@@ -158,18 +140,28 @@ impl FalconVerifier {
             }
         }
 
-        // Step 6: Hash message to challenge polynomial c0
+        // Step 6: hash to the challenge polynomial. `false` means a
+        // coefficient escaped [0, Q), which cannot happen as written.
         let mut c0 = [0u16; FALCON_512_N];
-        Self::hash_to_point(nonce, message, &mut c0);
+        if !Self::hash_to_point(nonce, message, &mut c0) {
+            return false;
+        }
 
-        // Step 7: Prepare public key and verify
-        // Convert h to NTT domain and Montgomery form for efficient multiplication
+        // Step 7: move h into the NTT domain and Montgomery form, then verify.
         poly_prepare_for_mul(&mut h);
 
         Self::verify_raw_512(&c0, &s2, &h)
     }
 
-    pub fn verify_raw_512(
+    /// Checks `||(c0 - s2·h, s2)|| ≤ L2_BOUND_512`.
+    ///
+    /// Validates nothing, so it can return `true` for garbage. `verify_512`
+    /// is what guarantees the inputs:
+    ///
+    /// * `c0`: canonical, in `[0, Q)` (`hash_to_point`)
+    /// * `s2`: in `[-2047, 2047]` (`decode_sig_compressed`)
+    /// * `h`: canonical, Montgomery, NTT domain (`poly_prepare_for_mul`)
+    fn verify_raw_512(
         c0: &[u16; FALCON_512_N],
         s2: &[i16; FALCON_512_N],
         h: &[u16; FALCON_512_N],
@@ -187,14 +179,14 @@ impl FalconVerifier {
             tt[i] = w as u16;
         }
 
-        // Step 2: Compute s2·h in the ring Z_q[X]/(X^n + 1)
-        // Since h is already in NTT+Montgomery form, we only need to transform tt.
+        // Step 2: s2·h in the ring Z_q[X]/(X^n + 1). h arrives already in
+        // NTT+Montgomery form; only tt needs transforming.
         ntt_forward(&mut tt);
         poly_pointwise_mul(&mut tt, h);
         ntt_inverse(&mut tt);
 
-        // Step 3: Compute s1 = c0 - s2·h  (equivalently, -s1 = s2·h - c0).
-        // ||s1|| = ||-s1||, so the sign flip does not affect the norm check below.
+        // Step 3: s1 = c0 - s2·h, computed as -s1 = s2·h - c0. The norm is
+        // the same either way, so the sign flip is free.
         poly_sub(&mut tt, c0);
 
         // Step 4: Convert -s1 back to signed representation for norm computation
@@ -213,18 +205,15 @@ impl FalconVerifier {
     ///
     /// # Overflow handling
     ///
-    /// The running squared-norm can exceed `2^32` (worst-case ≈ `1024 ·
-    /// (q/2)² ≈ 3.86·10¹⁰`), so `s` uses wrapping additions. We still need
-    /// the check to reject when the true value is larger than the bound but
-    /// a wrap makes the observed value small.
+    /// The running norm can pass `2^32` (worst case ≈ `1024 · (q/2)² ≈
+    /// 3.86·10¹⁰`), so `s` wraps. A wrap must still reject, or a norm far
+    /// above the bound comes back looking small.
     ///
-    /// **Invariant.** Every `z²` summand satisfies `z² ≤ (q/2)² ≈ 3.77·10⁷ <
-    /// 2³¹`. Therefore, if an addition wraps past `2³²`, the value *before*
-    /// the wrap must have been `≥ 2³² − z² > 2³¹`, i.e. with bit 31 set.
-    /// `ng |= s` is evaluated after every addition and captures that high bit
-    /// into `ng`. The final `s |= 0 - (ng >> 31)` saturates `s` to `0xFFFFFFFF`
-    /// when any wrap (or sub-wrap that drove `s ≥ 2³¹`) has occurred, causing
-    /// the bounds check to reject.
+    /// Every `z²` is at most `(q/2)² ≈ 3.77·10⁷`, well under `2³¹`. So an
+    /// addition can only wrap past `2³²` if the value going in was
+    /// `≥ 2³² − z² > 2³¹`, i.e. had bit 31 set. `ng |= s` after each
+    /// addition catches that bit, and `s |= 0 - (ng >> 31)` then saturates
+    /// `s` to `0xFFFFFFFF`, failing the bounds check.
     fn is_short(s1: &[i16; FALCON_512_N], s2: &[i16; FALCON_512_N]) -> bool {
         let mut s: u32 = 0;
         let mut ng: u32 = 0;
@@ -245,7 +234,11 @@ impl FalconVerifier {
         s <= L2_BOUND_512
     }
 
-    /// Decodes a Falcon-512 public key from its packed binary format (14 bits per coefficient, MSB-first).
+    /// Decodes a Falcon-512 public key from its packed binary format:
+    /// 14 bits per coefficient, MSB-first.
+    ///
+    /// On success `h` holds 512 coefficients in `[0, Q)`. On failure it is
+    /// partially written; discard it.
     pub fn decode_pubkey(pubkey: &[u8], h: &mut [u16; FALCON_512_N]) -> bool {
         if pubkey.len() != FALCON_512_PUBKEY_SIZE {
             return false;
@@ -276,14 +269,16 @@ impl FalconVerifier {
             }
         }
 
-        if (acc & ((1u32 << acc_len) - 1)) != 0 {
-            return false;
-        }
+        // 896 * 8 == 512 * 14, so the accumulator always drains and there
+        // are no leftover bits to check. Only true while the length gate
+        // above is exact.
+        debug_assert_eq!(acc_len, 0, "896 payload bytes = 512 * 14 bits exactly");
 
         true
     }
 
-    /// Decodes a signature from compressed format. Returns bytes consumed, or 0 on error.
+    /// Decodes a signature from compressed format, returning the number of
+    /// bytes consumed, or 0 if the body is malformed.
     fn decode_sig_compressed(data: &[u8], s2: &mut [i16; FALCON_512_N]) -> usize {
         let mut acc: u32 = 0;
         let mut acc_len: u32 = 0;
@@ -335,11 +330,22 @@ impl FalconVerifier {
     }
 
     /// Hashes nonce || message to a challenge polynomial using SHAKE256 with rejection sampling.
-    fn hash_to_point(nonce: &[u8], message: &[u8], c0: &mut [u16; FALCON_512_N]) {
+    ///
+    /// Nonce and message are absorbed with no separator, as in the
+    /// reference, so only the concatenation matters: `[1,1] || [2,2]` and
+    /// `[1] || [1,2,2]` hash the same. Unambiguous only with a fixed-length
+    /// nonce. Pass 40 bytes.
+    ///
+    /// Returns `false` if a coefficient lands outside `[0, Q)`, which the
+    /// bounds below rule out. Checked rather than asserted because
+    /// `__check_auth` must not panic. `c0` is garbage on `false`.
+    fn hash_to_point(nonce: &[u8], message: &[u8], c0: &mut [u16; FALCON_512_N]) -> bool {
         use sha3::{
             digest::{ExtendableOutput, Update, XofReader},
             Shake256,
         };
+
+        debug_assert_eq!(nonce.len(), 40, "hash_to_point requires a 40-byte nonce");
 
         let mut hasher = Shake256::default();
         hasher.update(nonce);
@@ -357,22 +363,25 @@ impl FalconVerifier {
 
             const ACCEPT_THRESHOLD: u32 = 5 * Q;
             if w < ACCEPT_THRESHOLD {
-                // Reduce w mod Q with bounded conditional subtractions. The
-                // accept threshold guarantees w < 5*Q, so four subtractions
-                // suffice. The naive `while v >= Q { v -= Q; }` form gets
-                // rewritten by LLVM as `w % Q` and lowered to hardware UDIV
-                // at -Oz/-Os; see docs/audit/constant-time-analysis.md F-001.
+                // w < 5*Q, so four conditional subtractions reduce it. Do
+                // not rewrite as a loop: LLVM turns `while v >= Q` into
+                // `w % Q` and lowers it to UDIV at -Oz/-Os, which is not
+                // constant time. See docs/audit/constant-time-analysis.md.
                 let mut v = w;
                 v = field_sub(v, Q);
                 v = field_sub(v, Q);
                 v = field_sub(v, Q);
                 v = field_sub(v, Q);
-                debug_assert!(v < Q);
+                if v >= Q {
+                    return false;
+                }
                 c0[idx] = v as u16;
                 idx += 1;
                 remaining -= 1;
             }
         }
+
+        true
     }
 }
 

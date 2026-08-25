@@ -1,9 +1,9 @@
 #![no_std]
 
-//! # Falcon-512 Signature Verifier for Soroban
+//! Falcon-512 signature verifier for Soroban.
 //!
-//! Thin Soroban wrapper around `falcon-512-core`. All cryptographic logic
-//! lives in the core crate; this file only handles `soroban-sdk` type marshalling.
+//! Thin wrapper around `falcon-512-core`. All crypto lives in the core
+//! crate; this file only marshals `soroban-sdk` types.
 
 use soroban_sdk::{contract, contractimpl, Bytes, Env};
 
@@ -14,10 +14,9 @@ pub use falcon_512_core::{
     FALCON_SIG_MAX_SIZE, FALCON_SIG_MIN_SIZE, L2_BOUND_512, Q,
 };
 
-// DRS-1: bound the worst-case verify() stack frame at build time. verify()
-// stacks a 16 KiB message buffer + 897 B pubkey + 666 B signature buffer;
-// verify_512 then uses several fixed [u16;512]/[i16;512] arrays. Keep the
-// entry buffers well under the wasm32 shadow-stack budget (1 MiB default).
+// Bound the worst-case verify() frame at build time: a 16 KiB message
+// buffer, 897 B pubkey, 666 B signature, plus verify_512's fixed arrays.
+// The wasm32 shadow stack defaults to 1 MiB.
 const _: () = assert!(
     FALCON_MAX_MESSAGE_SIZE + FALCON_512_PUBKEY_SIZE + (FALCON_SIG_MAX_SIZE as usize) <= 64 * 1024
 );
@@ -29,15 +28,9 @@ pub struct FalconVerifierContract;
 impl FalconVerifierContract {
     /// Verify a Falcon-512 signature.
     ///
-    /// # Arguments
-    /// * `public_key` - 897-byte Falcon-512 public key
-    /// * `message` - Message that was signed, up to `FALCON_MAX_MESSAGE_SIZE` bytes
-    /// * `signature` - Falcon signature (compressed or padded format)
-    ///
-    /// # Returns
-    /// * `true` if the signature is valid, `false` otherwise.
-    ///
-    /// Returns `false` for any oversized input rather than silently truncating.
+    /// 897-byte key, message up to `FALCON_MAX_MESSAGE_SIZE`, compressed or
+    /// padded signature. Oversized input returns `false` rather than being
+    /// truncated, so nobody gets a verdict on a message they did not send.
     pub fn verify(_env: Env, public_key: Bytes, message: Bytes, signature: Bytes) -> bool {
         if public_key.len() != FALCON_512_PUBKEY_SIZE as u32 {
             return false;
@@ -51,12 +44,9 @@ impl FalconVerifierContract {
             return false;
         }
 
-        // Bulk host->guest copies (DRS-3 optimization). The length gates above
-        // guarantee `public_key.len() == 897`, `sig_len in [42,666]`, and
-        // `msg_len <= 16384`, so each destination slice is sized to exactly the
-        // source length; `copy_into_slice` only panics on a length mismatch,
-        // which cannot occur here. One metered host call each, versus up to
-        // ~17.9 KB of individual `get()` dispatches.
+        // Bulk host->guest copies: three metered host calls instead of
+        // ~17.9 KB of `get()` dispatches. The gates above make each
+        // destination exactly its source length, so this cannot panic.
         let mut pk_bytes = [0u8; FALCON_512_PUBKEY_SIZE];
         public_key.copy_into_slice(&mut pk_bytes);
 

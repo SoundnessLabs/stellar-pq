@@ -18,12 +18,24 @@
 //! `DOMAIN_SEPARATOR || signature_payload_bytes`, where `DOMAIN_SEPARATOR`
 //! equals [`DOMAIN_SEPARATOR`] and `signature_payload_bytes` is the 32-byte
 //! SHA-256 payload produced by Soroban for the authorization entry.
+//!
+//! ## Instance-storage footprint
+//!
+//! The 897-byte public key sits in instance storage under `F_PUBKEY`.
+//! Soroban caps the whole instance entry at 64 KiB, so the key is ~1.4% of
+//! the budget before XDR overhead.
+//!
+//! Worth knowing before adding instance state: it all shares that one
+//! entry, and Falcon keys are big. A pending key for two-step rotation
+//! would double the Falcon material. A write that exceeds the cap fails at
+//! the host and takes the whole call with it, so check the headroom first,
+//! or use persistent storage.
 
 use soroban_sdk::{
     auth::{Context, CustomAccountInterface},
-    contract, contracterror, contractimpl,
+    contract, contracterror, contractevent, contractimpl,
     crypto::Hash,
-    symbol_short, Bytes, Env, Symbol, Vec,
+    symbol_short, Bytes, BytesN, Env, Symbol, Vec,
 };
 
 pub use falcon_512_core::verify;
@@ -47,12 +59,11 @@ pub const DOMAIN_SEPARATOR: &[u8] = b"soroban-falcon-smart-account-v1";
 /// `DOMAIN_SEPARATOR` is 31 bytes and the Soroban payload is 32 bytes.
 const SIGNED_MESSAGE_MAX: usize = 128;
 
-/// Instance-storage TTL threshold (in ledgers) below which we proactively
-/// bump. Soroban auto-extends instance TTL on every contract invocation,
-/// so this is defense-in-depth for long-idle accounts.
+/// Bump the instance TTL below this many ledgers. Soroban auto-extends on
+/// every invocation, so this is only for idle accounts.
 const INSTANCE_TTL_THRESHOLD: u32 = 100_000;
-/// Target TTL to extend instance storage to when bumping (~30 days at
-/// ~5s/ledger). Conservative — the host clamps to network maxima.
+/// Extend to this: ~30 days at ~5s/ledger. The host clamps to the network
+/// max anyway.
 const INSTANCE_TTL_EXTEND_TO: u32 = 535_000;
 
 /// Exact length of the assembled signed message: `DOMAIN_SEPARATOR.len() + 32`.
@@ -60,11 +71,28 @@ const INSTANCE_TTL_EXTEND_TO: u32 = 535_000;
 /// arithmetic on dynamic lengths.
 const SIGNED_MESSAGE_LEN: usize = DOMAIN_SEPARATOR.len() + 32;
 
-// Compile-time invariant: the stack buffer SIGNED_MESSAGE_MAX is large
-// enough for the assembled message. If anyone ever changes
-// DOMAIN_SEPARATOR to a longer string this assertion fails the build
-// rather than silently overrunning the buffer.
+// A longer DOMAIN_SEPARATOR should fail the build, not overrun the buffer.
 const _: () = assert!(SIGNED_MESSAGE_LEN <= SIGNED_MESSAGE_MAX);
+
+/// Emitted at deploy with SHA-256 of the pubkey. The hash rather than the
+/// 897 bytes keeps ledger metadata small; `get_pubkey` has the full key.
+///
+/// Topics and data match what this contract emitted before the
+/// `#[contractevent]` migration. Indexers key on that shape, so changing
+/// it breaks them.
+#[contractevent(topics = ["falcon", "init"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FalconInit {
+    pub pubkey_hash: BytesN<32>,
+}
+
+/// Emitted by `rotate_key` with SHA-256 of the new pubkey. Same shape rule
+/// as [`FalconInit`].
+#[contractevent(topics = ["falcon", "rotate"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FalconRotate {
+    pub pubkey_hash: BytesN<32>,
+}
 
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -81,33 +109,27 @@ pub struct FalconSmartAccount;
 
 #[contractimpl]
 impl FalconSmartAccount {
-    /// Constructor - initializes the smart account with a Falcon-512 public key.
+    /// Initializes the smart account with a Falcon-512 public key at deploy.
     pub fn __constructor(env: Env, falcon_pubkey: Bytes) {
         if falcon_pubkey.len() != FALCON_512_PUBKEY_SIZE as u32 {
             panic!("Invalid public key size: expected 897 bytes");
         }
         let storage = env.storage().instance();
         storage.set(&FALCON_PUBKEY_KEY, &falcon_pubkey);
-        // Proactively extend the instance-storage TTL on init. Soroban
-        // auto-extends instance TTL on access, so this is defense-in-depth
-        // for accounts that may sit idle for long stretches.
+        // Covers an account deployed and then left idle before its first call.
         storage.extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-        // Emit an `init` event with the SHA-256 of the pubkey so off-chain
-        // observers can index initialization without permanently bloating
-        // ledger metadata with the full 897-byte pubkey.
         let pubkey_hash = env.crypto().sha256(&falcon_pubkey);
-        env.events()
-            .publish((symbol_short!("falcon"), symbol_short!("init")), pubkey_hash);
+        FalconInit {
+            pubkey_hash: pubkey_hash.to_bytes(),
+        }
+        .publish(&env);
     }
 
     /// Get the stored Falcon public key.
     ///
-    /// Returns `Err(Error::PublicKeyMissing)` if the contract has not been
-    /// initialized via `__constructor`. Under normal Soroban semantics this
-    /// is unreachable (constructor runs exactly once at deploy and sets
-    /// `F_PUBKEY` unconditionally), but returning `Result` is symmetric with
-    /// the rest of the contract surface and avoids a host trap on any
-    /// pre-init code path.
+    /// `Err(PublicKeyMissing)` means `F_PUBKEY` was never written, which
+    /// takes a deploy that skipped the constructor. `Result` rather than an
+    /// unwrap so that surfaces as a contract error, not a host trap.
     pub fn get_pubkey(env: Env) -> Result<Bytes, Error> {
         env.storage()
             .instance()
@@ -117,15 +139,12 @@ impl FalconSmartAccount {
 
     /// Rotate the Falcon public key.
     ///
-    /// The call must be authorized by the account itself. Soroban will route
-    /// that authorization back through [`__check_auth`], so rotation requires
-    /// a valid Falcon signature from the **current** key (standard key-
-    /// rotation semantics). After success, all future transactions must be
-    /// signed with `new_pubkey`.
+    /// The account authorizes this itself, which Soroban routes back through
+    /// [`__check_auth`], so rotation needs a signature from the current
+    /// key. Everything after is signed with `new_pubkey`.
     pub fn rotate_key(env: Env, new_pubkey: Bytes) -> Result<(), Error> {
-        // Authorize FIRST, then validate. Validating before `require_auth`
-        // would expose an unauthenticated oracle on pubkey-size handling
-        // and burn the caller's host-cost without nonce consumption.
+        // Authorize before validating, or an unauthenticated caller can
+        // probe pubkey-size handling and burn host cost without a nonce.
         env.current_contract_address().require_auth();
         if new_pubkey.len() != FALCON_512_PUBKEY_SIZE as u32 {
             return Err(Error::InvalidPublicKeySize);
@@ -133,12 +152,11 @@ impl FalconSmartAccount {
         let storage = env.storage().instance();
         storage.set(&FALCON_PUBKEY_KEY, &new_pubkey);
         storage.extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
-        // Emit a `rotate` event with the SHA-256 of the new pubkey for
-        // off-chain audit trails (full pubkey is reconstructable via
-        // `get_pubkey`).
         let pubkey_hash = env.crypto().sha256(&new_pubkey);
-        env.events()
-            .publish((symbol_short!("falcon"), symbol_short!("rotate")), pubkey_hash);
+        FalconRotate {
+            pubkey_hash: pubkey_hash.to_bytes(),
+        }
+        .publish(&env);
         Ok(())
     }
 }
@@ -151,11 +169,11 @@ impl CustomAccountInterface for FalconSmartAccount {
     /// Verify authorization using Falcon-512.
     ///
     /// The signed message is `DOMAIN_SEPARATOR || signature_payload.to_array()`.
-    /// `_auth_contexts` is intentionally unused: the Soroban host has already
-    /// validated that the contexts requested at invocation time are covered by
-    /// the signed `root_invocation`, and `signature_payload` hashes that
-    /// invocation together with the network id, account nonce, and expiration
-    /// ledger, which is what defeats replay.
+    ///
+    /// `_auth_contexts` is unused on purpose: the host already checked the
+    /// requested contexts against the signed `root_invocation`, and
+    /// `signature_payload` hashes that with the network id, nonce, and
+    /// expiration ledger. The nonce is what stops replay.
     #[allow(non_snake_case)]
     fn __check_auth(
         env: Env,
@@ -169,6 +187,9 @@ impl CustomAccountInterface for FalconSmartAccount {
             .get(&FALCON_PUBKEY_KEY)
             .ok_or(Error::PublicKeyMissing)?;
 
+        // Keep this. __constructor and rotate_key already enforce the
+        // length, but it is what makes the copy below panic-free, and
+        // __check_auth cannot panic.
         if pubkey.len() != FALCON_512_PUBKEY_SIZE as u32 {
             return Err(Error::InvalidPublicKeySize);
         }
@@ -178,10 +199,9 @@ impl CustomAccountInterface for FalconSmartAccount {
             return Err(Error::InvalidSignatureSize);
         }
 
-        // Bulk host->guest copies. The size gates above guarantee
-        // `pubkey.len() == 897` and `sig_len in [42,666]`, so each destination
-        // slice matches its source length and `copy_into_slice` (which panics
-        // only on a length mismatch) cannot trap __check_auth.
+        // Bulk host->guest copies. `copy_into_slice` panics on a length
+        // mismatch; the gates above make each destination exactly its
+        // source length.
         let mut pk_bytes = [0u8; FALCON_512_PUBKEY_SIZE];
         pubkey.copy_into_slice(&mut pk_bytes);
 
@@ -189,11 +209,8 @@ impl CustomAccountInterface for FalconSmartAccount {
         let mut sig_bytes = [0u8; FALCON_SIG_MAX_SIZE as usize];
         signature.copy_into_slice(&mut sig_bytes[..sig_len_usize]);
 
-        // Build the domain-separated message:
-        //     DOMAIN_SEPARATOR || signature_payload.to_array()
-        // SIGNED_MESSAGE_LEN is a compile-time constant; the static assert
-        // above guarantees it fits in SIGNED_MESSAGE_MAX, so this path
-        // contains no runtime length arithmetic.
+        // DOMAIN_SEPARATOR || signature_payload.to_array(). Both lengths are
+        // compile-time constants, so no runtime length arithmetic.
         let payload_array = signature_payload.to_array();
         let mut signed_msg = [0u8; SIGNED_MESSAGE_MAX];
         signed_msg[..DOMAIN_SEPARATOR.len()].copy_from_slice(DOMAIN_SEPARATOR);

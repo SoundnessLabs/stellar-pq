@@ -60,7 +60,7 @@ fn benchmark_verify_falcon512() {
 
 #[test]
 fn benchmark_verify_max_message() {
-    // DRS-2: worst-case gas at the largest accepted message size
+    // Worst-case gas at the largest accepted message size
     // (FALCON_MAX_MESSAGE_SIZE = 16384). This exercises the full path the
     // contract actually admits: the 16 KiB host->guest copy plus the 16 KiB
     // SHAKE256 absorb, then decode + NTT. The signature is the "Hello, Falcon!"
