@@ -9,14 +9,16 @@
 | Likelihood | Likely |
 | Impact | Bad |
 | Reported | 2026-08-19 |
-| Status | **Open** — remediation not yet implemented |
-| Owner | TBD |
+| Status | **Fixed** — remediated on `claude/falcon-signature-headers-9xo65t` (pending merge to `main`) |
+| Owner | gnosed |
 | Affects | [`contracts/falcon-512-core/src/verify.rs`](../../../contracts/falcon-512-core/src/verify.rs) (header gate + module docs), verifier and smart-account `tests/kat.rs` |
 | Supersedes | **AUD-002** (previously closed as _Accepted — required for interop_; see note below) |
 | Related | **AUD-003** (format comments corrected), **AUD-001** (padding canonicity) |
 
 > **Tracking stub.** This document records the finding and the agreed
-> remediation. No code change lands in this PR.
+> remediation. No code change landed in the PR that introduced it (PR #2);
+> the fix branch this document was merged into implements the full
+> remediation below.
 
 ## Finding as reported
 
@@ -100,19 +102,34 @@ consumption and length:
 
 ## Planned remediation
 
-- [ ] Replace the `fmt != 0x20 && fmt != 0x30` gate in `verify_512` with a
+- [x] Replace the `fmt != 0x20 && fmt != 0x30` gate in `verify_512` with a
       strict `signature[0] != 0x39` rejection.
-- [ ] Rewrite the module-level "Accepted signature formats" docs in
+      (`verify_512` now pins `FALCON_512_SIG_HEADER = 0x30 | logn` = `0x39`.)
+- [x] Rewrite the module-level "Accepted signature formats" docs in
       `verify.rs`, which currently assert the opposite of the spec.
-- [ ] Rewrite the Step-2 header-gate comment in `verify_512` for the same
+- [x] Rewrite the Step-2 header-gate comment in `verify_512` for the same
       reason.
-- [ ] Update the KAT harness to rewrite `0x29` → `0x39` when converting a NIST
+- [x] Update the KAT harness to rewrite `0x29` → `0x39` when converting a NIST
       signed-message envelope into detached form, instead of preserving the
-      envelope's nonce-less header.
-- [ ] Add a regression test asserting a `0x29`-headed signature is rejected
+      envelope's nonce-less header. (Both the verifier and smart-account KAT
+      suites now assert the envelope header is `0x29` and emit `0x39`; all
+      100 vectors pass.)
+- [x] Add a regression test asserting a `0x29`-headed signature is rejected
       while its `0x39` twin verifies.
-- [ ] Re-close **AUD-002** in [`remediation-log.md`](../remediation-log.md)
+      (`test_envelope_header_0x29_rejected` in the verifier KAT suite also
+      rejects `0x59`/`0x31`/`0x38`; a core unit test covers the gate.)
+- [x] Re-close **AUD-002** in [`remediation-log.md`](../remediation-log.md)
       with a corrected rationale, and add a **VER-001** row.
+
+## Developers response
+
+Confirmed and fixed as recommended. The header gate now requires exactly
+`0x39`; natural vs. 666-byte padded form is still decided by decoder
+consumption and total length, with a zero-only tail accepted solely at the
+fixed 666-byte size. The incorrect "signers disagree" interop rationale was
+retracted in the module docs, KAT comments, web-demo comments, threat model,
+and remediation log (AUD-002 closed as superseded by VER-001). The CT-analysis
+standalone copy was updated to match the new gate.
 
 ## Repository notes
 
