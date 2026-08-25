@@ -9,13 +9,10 @@
 | Likelihood | Not Likely |
 | Impact | Protocol Breaking |
 | Reported | 2026-08-18 |
-| Status | **Open** — remediation not yet implemented |
-| Owner | TBD |
-| Affects | [`contracts/soroban-falcon-smart-account/src/lib.rs`](../../../contracts/soroban-falcon-smart-account/src/lib.rs) — `rotate_key` |
+| Status | **In progress** — remediation implemented on branch `claude/falcon-key-rotation-validation-bd4fd8`, awaiting review |
+| Owner | gnosed |
+| Affects | [`contracts/soroban-falcon-smart-account/src/lib.rs`](../../../contracts/soroban-falcon-smart-account/src/lib.rs) — `rotate_key` (now replaced by `propose_key` / `accept_key` / `cancel_key`) |
 | Related | **TM-002** (rotation race, Open), **TM-003** (rotation spam, Accepted), **SR-001** (auth-before-validate ordering, Fixed) |
-
-> **Tracking stub.** This document records the finding and the agreed
-> remediation. No code change lands in this PR.
 
 ## Finding as reported
 
@@ -52,50 +49,79 @@ At minimum, document that the current implementation cannot recover from an
 incorrect key rotation and emphasize that operators must carefully verify the
 new public key before proceeding.
 
-## Planned remediation
+## Implemented remediation
 
-- [ ] Add a well-formedness check on `new_pubkey` before storing: reject unless
-      `decode_pubkey` succeeds (this also pins the `pubkey[0] == 9` header and
-      the 14-bit coefficient encoding, not just the 897-byte length).
-- [ ] Introduce two-step rotation:
-  - [ ] `propose_key(new_pubkey)` — authorized by the **current** key; stores
-        `new_pubkey` as pending; current key stays active.
-  - [ ] `accept_key()` — authorized by the **pending** key, proving possession
-        of the corresponding private key; promotes pending → active.
-  - [ ] `cancel_key()` — authorized by the current key; clears the pending
-        rotation. The current key must also be able to replace a pending
-        proposal by calling `propose_key` again.
-- [ ] Decide whether `accept_key()` can practically be authorized by the
-      pending key under Soroban's `__check_auth` routing (the account's auth
-      currently resolves against the *stored active* key). If not, fall back to
-      the report's alternative: `accept_key()` re-authorized by the current
-      key as a confirmation step.
-- [ ] Add a pending-key storage slot and extend its TTL alongside the active
-      key.
-- [ ] Emit `propose` / `accept` / `cancel` events (SHA-256 of the pubkey, matching
-      the existing `init` / `rotate` convention from **SR-004**).
-- [ ] Tests: happy-path two-step rotation; accept without propose; propose
-      twice; cancel then accept; malformed pubkey rejected at propose time.
-- [ ] Document the irrecoverability of a bad rotation in the contract docs and
-      README regardless of which option is implemented.
-- [ ] Add a **VER-002** row to [`remediation-log.md`](../remediation-log.md).
+- [x] Well-formedness check on `new_pubkey` before storing: shared
+      `check_pubkey_well_formed` gate (897-byte length, then `decode_pubkey`:
+      `0x09` header, all 512 coefficients < Q, zero residual bits). Applied to
+      `propose_key` and `__constructor` — a malformed deploy key bricks the
+      account the same way (threat-model DoS.6). New error codes
+      `MalformedPublicKey`, `NoPendingKey`, `ProofVerificationFailed`.
+- [x] Two-step rotation, replacing `rotate_key`:
+  - [x] `propose_key(new_pubkey)` — authorized by the current key
+        (`require_auth()` first, then validate); stores `new_pubkey` under
+        the `F_PENDING` instance-storage slot; current key stays active.
+        Calling it again replaces the proposal.
+  - [x] `accept_key(proof)` — `proof` must be a Falcon-512 signature by the
+        pending key over `ACCEPT_DOMAIN_SEPARATOR || SHA-256(pending_pubkey)`,
+        verified with the embedded verifier. Promotes pending to active and
+        clears the slot.
+  - [x] `cancel_key()` — authorized by the current key; clears the pending
+        rotation. `get_pending_key()` view added.
+- [x] Auth-routing decision: routing the pending key through `__check_auth`
+      isn't practical, since the host resolves the account's auth against the
+      stored active key. So `accept_key` takes the proof as a parameter and
+      verifies it inline — the proof itself is the authorization. That's the
+      report's primary option (pending-key possession), not the current-key
+      fallback. The proof's domain tag is prefix-free against the transaction
+      tag, so a proof can't be replayed as a transaction signature or vice
+      versa.
+- [x] Pending-key storage slot lives in instance storage; TTL extended on
+      propose and accept alongside the active key.
+- [x] `propose` / `accept` / `cancel` events emitted with the SHA-256 of the
+      affected pubkey (SR-004 convention).
+- [x] Tests (`tests/integration.rs`): happy-path two-step rotation; accept
+      without propose; wrong-key/corrupted/undersized proof; propose twice
+      (replacement); cancel then accept; cancel without pending; propose/cancel
+      without auth; bad size after auth; malformed encodings (bad header,
+      coefficient ≥ Q, corrupted real key); malformed constructor key.
+      Proof fixtures are generated deterministically from the vendored
+      falcon-wasm signer by
+      [`tests/fixtures/gen_accept_fixtures.mjs`](../../../contracts/soroban-falcon-smart-account/tests/fixtures/gen_accept_fixtures.mjs).
+- [x] Irrecoverability and operator guidance documented in the crate README
+      ("Key rotation (two-step)"), the module docs, the root README row, and
+      `e2e/README.md`.
+- [x] Row added to [`remediation-log.md`](../remediation-log.md).
+- [ ] Revisit TM-002 with the widened two-transaction window (see notes below)
+      and refresh the threat model's `rotate_key` references (`threat-model.md`
+      still describes the one-step flow).
 
 ## Repository notes
 
-`rotate_key` today calls `require_auth()` first and then checks only
-`new_pubkey.len() != FALCON_512_PUBKEY_SIZE` before writing to instance storage.
-The auth-before-validate ordering is deliberate and was itself a remediation
-(**SR-001**) — any redesign must preserve it, so `propose_key` should likewise
-authorize before validating.
+The old `rotate_key` called `require_auth()` first and only then checked
+`new_pubkey.len() != FALCON_512_PUBKEY_SIZE` before writing to instance
+storage. That auth-before-validate ordering was itself an earlier
+remediation, and the redesign keeps it: `propose_key` and `cancel_key`
+authorize before touching anything. `accept_key` has no `require_auth` on
+purpose — its
+authorization is the proof-of-possession signature, the same way
+`__check_auth` treats signature verification as authorization. Worth flagging
+for review: once a rotation is proposed, anyone holding the pending private
+key can finalize it. That's the state the current key already authorized at
+propose time, and it also means losing the current key mid-rotation doesn't
+strand an already-proposed rotation.
 
-This finding interacts with **TM-002** (already Open): an attacker holding the
+This finding interacts with TM-002 (already open): an attacker holding the
 current key can race a malicious transaction into the same ledger as a
 rotation. A two-step flow widens that window from one transaction to two, so
-the TM-002 analysis should be revisited as part of this work rather than
-treated as independent.
+TM-002 should get revisited alongside this rather than treated separately.
+It doesn't make TM-002 worse in substance — an attacker with the current key
+was already game over — but `threat-model.md` still describes the one-step
+`rotate_key` in Tamper.2, DoS.5, and Elevation.1/3, and needs a refresh pass.
 
-Note that a two-step rotation is a **breaking change to the contract
-interface**. The deployed testnet smart account
-(`CANNCY2STTSAR7UQLZ7MVKQNMQ45WCDLJ67ILTOVSO6K3BJTULXSYPC4`) exposes
-`rotate_key`; deciding whether to keep it as a deprecated alias or remove it
-is part of this finding's scope.
+Interface decision: `rotate_key` is removed, not kept as an alias. A one-step
+write-through path would preserve exactly the hazard this finding describes.
+That's a breaking change to the contract interface; the deployed testnet
+smart account (`CANNCY2STTSAR7UQLZ7MVKQNMQ45WCDLJ67ILTOVSO6K3BJTULXSYPC4`)
+still runs the old code and keeps its `rotate_key` until redeployed — the
+contract has no upgrade hook, so existing instances are unaffected.
