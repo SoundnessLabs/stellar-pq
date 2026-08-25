@@ -92,14 +92,16 @@ impl KatVector {
 
         assert_eq!(sig_data.len(), sig_len, "Signature data length mismatch");
 
-        // sig_data starts with the header byte, followed by the compressed body
-        let header = sig_data[0];
+        // sig_data starts with the envelope's nonce-less header (0x29),
+        // followed by the compressed body. The detached format uses 0x39,
+        // so the conversion replaces the header rather than preserving it.
+        assert_eq!(sig_data[0], 0x29, "NIST envelope signature header");
         let sig_body = &sig_data[1..];
 
-        // Reconstruct standard Falcon signature:
+        // Reconstruct standard detached Falcon signature:
         // header(1) || nonce(40) || compressed_body
         let mut signature = Vec::with_capacity(1 + 40 + sig_body.len());
-        signature.push(header);
+        signature.push(0x39);
         signature.extend_from_slice(nonce);
         signature.extend_from_slice(sig_body);
 
@@ -173,19 +175,9 @@ fn test_kat_vector_0() {
     assert_eq!(pk.len(), 897, "Public key should be 897 bytes");
     assert_eq!(msg.len(), vector.mlen.unwrap(), "Message length mismatch");
 
-    // Verify signature structure - header encodes format and logn
-    // Low nibble should be 9 (logn for Falcon-512)
-    // High nibble: 0x20 = padded, 0x30 = compressed, 0x50 = CT
-    assert_eq!(
-        sig[0] & 0x0F,
-        9,
-        "Signature header low nibble should be 9 (logn for Falcon-512)"
-    );
-    let format = sig[0] & 0xF0;
-    assert!(
-        format == 0x20 || format == 0x30 || format == 0x50,
-        "Signature header should indicate valid format (padded=0x2x, compressed=0x3x, CT=0x5x)"
-    );
+    // Verify signature structure: the detached header is exactly
+    // 0x39 = 0x30 (compressed family) | 9 (logn for Falcon-512).
+    assert_eq!(sig[0], 0x39, "Detached signature header should be 0x39");
 
     println!("Vector 0:");
     println!("  Public key: {} bytes", pk.len());

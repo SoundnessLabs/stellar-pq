@@ -139,10 +139,8 @@ impl FalconVerifier {
         if message.len() > FALCON_MAX_MESSAGE_SIZE { return false; }
         let sig_len = signature.len();
         if sig_len < FALCON_SIG_MIN_SIZE as usize || sig_len > FALCON_SIG_MAX_SIZE as usize { return false; }
-        let sig_header = signature[0];
-        if (sig_header & 0x0F) != FALCON_512_LOGN { return false; }
-        let fmt = sig_header & 0xF0;
-        if fmt != 0x20 && fmt != 0x30 { return false; }
+        const FALCON_512_SIG_HEADER: u8 = 0x30 | FALCON_512_LOGN;
+        if signature[0] != FALCON_512_SIG_HEADER { return false; }
 
         let mut h = [0u16; FALCON_512_N];
         if !Self::decode_pubkey(pubkey, &mut h) { return false; }
