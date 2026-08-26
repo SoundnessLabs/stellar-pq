@@ -96,7 +96,7 @@ mod test {
 
         let pubkey = Bytes::from_slice(&env, &[9u8; FALCON_512_PUBKEY_SIZE]);
         let mut sig = [0u8; 666];
-        sig[0] = 0x29;
+        sig[0] = 0x39;
         let signature = Bytes::from_slice(&env, &sig);
 
         // A message one byte past the cap must be rejected instead of truncated.

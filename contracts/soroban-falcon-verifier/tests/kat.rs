@@ -17,16 +17,16 @@
 //! sm = sig_len (2 bytes, big-endian) || nonce (40 bytes) || message || sig_data
 //! ```
 //!
-//! To verify with our implementation, we reconstruct the standard Falcon
-//! signature, preserving the original header byte from the KAT:
+//! To verify with our implementation, we convert to the standard detached
+//! Falcon signature:
 //! ```text
-//! signature = header (0x29 in these NIST vectors) || nonce (40 bytes) || sig_body
+//! signature = header (0x39) || nonce (40 bytes) || sig_body
 //! ```
 //!
-//! The header low nibble is 9 (logn for Falcon-512). The NIST Round-3 KAT
-//! vectors use high nibble 0x2X with a *variable-length* compressed body; the
-//! verifier also accepts 0x3X (PQClean / falcon-wasm). See the verifier's
-//! module docs for the full format policy.
+//! Inside `sm`, `sig_data` starts with the envelope's *nonce-less* header
+//! `0x29 = 0x20 | logn`; a detached signature instead uses `0x39 = 0x30 |
+//! logn` (Falcon Round-3 §3.11.3), so the conversion replaces the header
+//! byte. The verifier accepts only 0x39; see its module docs.
 
 use soroban_falcon_verifier::FalconVerifier;
 
@@ -96,14 +96,16 @@ impl KatVector {
 
         assert_eq!(sig_data.len(), sig_len, "Signature data length mismatch");
 
-        // sig_data starts with the header byte, followed by the compressed body
-        let header = sig_data[0];
+        // sig_data starts with the envelope's nonce-less header (0x29),
+        // followed by the compressed body. The detached format uses 0x39,
+        // so the conversion replaces the header rather than preserving it.
+        assert_eq!(sig_data[0], 0x29, "NIST envelope signature header");
         let sig_body = &sig_data[1..];
 
-        // Reconstruct standard Falcon signature:
+        // Reconstruct standard detached Falcon signature:
         // header(1) || nonce(40) || compressed_body
         let mut signature = Vec::with_capacity(1 + 40 + sig_body.len());
-        signature.push(header);
+        signature.push(0x39);
         signature.extend_from_slice(nonce);
         signature.extend_from_slice(sig_body);
 
@@ -177,19 +179,9 @@ fn test_kat_vector_0() {
     assert_eq!(pk.len(), 897, "Public key should be 897 bytes");
     assert_eq!(msg.len(), vector.mlen.unwrap(), "Message length mismatch");
 
-    // Verify signature structure: low nibble = logn = 9; high nibble selects
-    // the encoding family. The NIST KAT vectors use 0x2X (variable-length
-    // compressed); the verifier also accepts 0x3X. (0x5X CT is out of scope.)
-    assert_eq!(
-        sig[0] & 0x0F,
-        9,
-        "Signature header low nibble should be 9 (logn for Falcon-512)"
-    );
-    let format = sig[0] & 0xF0;
-    assert!(
-        format == 0x20 || format == 0x30 || format == 0x50,
-        "Signature header high nibble should be 0x2X/0x3X (or 0x5X CT)"
-    );
+    // Verify signature structure: the detached header is exactly
+    // 0x39 = 0x30 (compressed family) | 9 (logn for Falcon-512).
+    assert_eq!(sig[0], 0x39, "Detached signature header should be 0x39");
 
     println!("Vector 0:");
     println!("  Public key: {} bytes", pk.len());
@@ -269,6 +261,34 @@ fn test_dec002_arbitrary_padding_rejected() {
         !FalconVerifier::verify_512(&pk, &msg, &tampered),
         "non-zero padding tail must be rejected"
     );
+}
+
+/// Header-malleability regression: 0x29 is the nonce-less
+/// header of the NIST crypto_sign envelope, not a valid detached header.
+/// Flipping the first byte of a valid 0x39 signature to 0x29 (or any other
+/// value) must invalidate it — one signature, one accepted encoding.
+#[test]
+fn test_envelope_header_0x29_rejected() {
+    let kat_content = include_str!("falcon512-KAT.rsp");
+    let vectors = parse_kat_file(kat_content);
+    let vector = &vectors[0];
+    let pk = vector.public_key();
+    let msg = vector.message();
+    let sig = vector.extract_falcon_signature();
+
+    assert!(
+        FalconVerifier::verify_512(&pk, &msg, &sig),
+        "valid 0x39 signature should verify"
+    );
+
+    for bad_header in [0x29u8, 0x59, 0x31, 0x38] {
+        let mut mangled = sig.clone();
+        mangled[0] = bad_header;
+        assert!(
+            !FalconVerifier::verify_512(&pk, &msg, &mangled),
+            "header 0x{bad_header:02x} must be rejected"
+        );
+    }
 }
 
 /// Test that verification fails with wrong public key.
