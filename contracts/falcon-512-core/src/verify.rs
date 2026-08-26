@@ -14,7 +14,7 @@
 //!    where H is SHAKE256 with rejection sampling to get uniform elements in Z_q
 //!
 //! 2. **Recover s1**: Compute s1 = c - s·h mod q
-//!    where multiplication is in the ring Z_q[X]/(X^n + 1)
+//!    where multiplication is in the ring `Z_q[X]/(X^n + 1)`
 //!
 //! 3. **Verify norm**: Check that ||(s1, s)|| ≤ bound
 //!    The signature is valid iff the L2 norm of (s1, s) is small enough
