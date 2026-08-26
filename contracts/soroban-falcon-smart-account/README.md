@@ -16,8 +16,35 @@ __constructor(falcon_pubkey: Bytes)  // 897-byte Falcon-512 public key
 
 | Function | Description |
 |----------|-------------|
-| `get_pubkey() -> Bytes` | Get the stored Falcon-512 public key |
+| `get_pubkey() -> Bytes` | Get the active Falcon-512 public key |
+| `get_pending_key() -> Bytes` | Get the proposed (not yet active) key of an in-flight rotation |
+| `propose_key(new_pubkey: Bytes)` | Step 1 of key rotation — authorized by the current key |
+| `accept_key(proof: Bytes)` | Step 2 of key rotation — authorized by the pending key (proof of possession) |
+| `cancel_key()` | Drop a pending rotation — authorized by the current key |
 | `__check_auth(...)` | Verify transaction authorization (called by Soroban runtime) |
+
+### Key rotation (two-step)
+
+Rotating to a public key whose private key you do not actually control would
+permanently brick the account — `__check_auth` could never succeed again and
+there is no recovery path. Rotation is therefore a two-step protocol:
+
+1. `propose_key(new_pubkey)` — authorized by the **current** key. The contract
+   rejects anything that is not a well-formed Falcon-512 encoding (897 bytes,
+   `0x09` header, all coefficients `< q`, zero residual bits), which catches
+   truncation and most copy/paste corruption. The proposed key is stored as
+   *pending*; the current key stays active.
+2. `accept_key(proof)` — `proof` must be a Falcon-512 signature made with the
+   **pending** key over `"soroban-falcon-smart-account-accept-v1" ||
+   SHA-256(pending_pubkey)`. Only the holder of the pending private key can
+   produce it, so a well-formed but *wrong* key can never be activated. On
+   success the pending key becomes active.
+
+Until `accept_key` succeeds, the current key can replace the proposal (call
+`propose_key` again) or drop it with `cancel_key()`. Operators should still
+verify the new public key out-of-band before proposing — the proof of
+possession guarantees the key pair is real and controlled by whoever signs the
+proof, not that it is the key you *meant* to install.
 
 ### Input Sizes
 
