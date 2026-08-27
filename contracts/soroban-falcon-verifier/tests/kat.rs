@@ -219,12 +219,11 @@ fn test_kat_wrong_message() {
     assert!(!result, "Verification should fail with wrong message");
 }
 
-/// DEC-002 regression: a natural-length signature inflated with arbitrary
-/// (non-666) zero padding must be REJECTED, while padding to exactly the
-/// 666-byte padded size with a zero tail is ACCEPTED. This closes the
-/// unbounded-length malleability the audit flagged (DEC-002).
+/// Arbitrary (non-666) zero padding must be rejected; padding to exactly
+/// 666 with a zero tail is fine. Without this, one signature re-encodes at
+/// any length in between and still verifies.
 #[test]
-fn test_dec002_arbitrary_padding_rejected() {
+fn test_arbitrary_padding_rejected() {
     let kat_content = include_str!("falcon512-KAT.rsp");
     let vectors = parse_kat_file(kat_content);
     let vector = &vectors[0];
@@ -249,7 +248,7 @@ fn test_dec002_arbitrary_padding_rejected() {
     assert_ne!(inflated.len(), 666);
     assert!(
         !FalconVerifier::verify_512(&pk, &msg, &inflated),
-        "DEC-002: arbitrarily zero-padded signature must be rejected"
+        "arbitrarily zero-padded signature must be rejected"
     );
 
     // (2) Padding to exactly the 666-byte padded size (zero tail) is allowed.

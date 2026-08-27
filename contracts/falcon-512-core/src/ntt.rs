@@ -1,8 +1,11 @@
-//! Number Theoretic Transform (NTT) for Falcon-512 Verification.
+//! Number-theoretic transform (NTT) for Falcon-512 verification.
 //!
-//! Twiddle tables and Montgomery constants match the Falcon reference
-//! implementation (PQClean `crypto_sign/falcon-512/clean`).
-use crate::{FALCON_512_N, Q};
+//! The twiddle tables and Montgomery constants are taken from the Falcon
+//! reference implementation, PQClean `crypto_sign/falcon-512/clean`.
+//!
+//! Internal to `verify.rs`. Nothing here validates its input: coefficients
+//! must already be canonical in `[0, Q)`.
+use crate::{FALCON_512_LOGN, FALCON_512_N, FALCON_512_NI, Q};
 
 /// Montgomery reduction constant: `-Q^{-1} mod 2^16`.
 const Q0I: u32 = 12287;
@@ -11,8 +14,11 @@ const R: u32 = 4091;
 /// `2^32 mod Q`, used to convert from natural form to Montgomery form.
 const R2: u32 = 10952;
 
+// NI * N must equal R in the field, or the final scaling is wrong.
+const _: () = assert!((FALCON_512_NI << FALCON_512_LOGN) % Q == R);
+
 /// Forward NTT twiddle factors in Montgomery form.
-pub static GMB: [u16; 512] = [
+static GMB: [u16; 512] = [
     4091, 7888, 11060, 11208, 6960, 4342, 6275, 9759, 1591, 6399, 9477, 5266, 586, 5825, 7538,
     9710, 1134, 6407, 1711, 965, 7099, 7674, 3743, 6442, 10414, 8100, 1885, 1688, 1364, 10329,
     10164, 9180, 12210, 6240, 997, 117, 4783, 4407, 1549, 7072, 2829, 6458, 4431, 8877, 7144, 2564,
@@ -50,7 +56,7 @@ pub static GMB: [u16; 512] = [
 ];
 
 /// Inverse NTT twiddle factors in Montgomery form.
-pub static IGMB: [u16; 512] = [
+static IGMB: [u16; 512] = [
     4091, 4401, 1081, 1229, 2530, 6014, 7947, 5329, 2579, 4751, 6464, 11703, 7023, 2812, 5890,
     10698, 3109, 2125, 1960, 10925, 10601, 10404, 4189, 1875, 5847, 8546, 4615, 5190, 11324, 10578,
     5882, 11155, 8417, 12275, 10599, 7446, 5719, 3569, 5981, 10108, 4426, 8306, 10755, 4679, 11052,
@@ -88,25 +94,19 @@ pub static IGMB: [u16; 512] = [
 ];
 
 #[inline(always)]
-pub fn field_add(x: u32, y: u32) -> u32 {
+fn field_add(x: u32, y: u32) -> u32 {
     let d = x.wrapping_add(y).wrapping_sub(Q);
     d.wrapping_add(Q & (0u32.wrapping_sub(d >> 31)))
 }
 
 #[inline(always)]
-pub fn field_sub(x: u32, y: u32) -> u32 {
+pub(crate) fn field_sub(x: u32, y: u32) -> u32 {
     let d = x.wrapping_sub(y);
     d.wrapping_add(Q & (0u32.wrapping_sub(d >> 31)))
 }
 
 #[inline(always)]
-pub fn field_halve(x: u32) -> u32 {
-    let x = x.wrapping_add(Q & (0u32.wrapping_sub(x & 1)));
-    x >> 1
-}
-
-#[inline(always)]
-pub fn montgomery_mul(x: u32, y: u32) -> u32 {
+fn montgomery_mul(x: u32, y: u32) -> u32 {
     let z = x * y;
     let w = ((z.wrapping_mul(Q0I)) & 0xFFFF).wrapping_mul(Q);
     let z = (z + w) >> 16;
@@ -114,7 +114,7 @@ pub fn montgomery_mul(x: u32, y: u32) -> u32 {
     z.wrapping_add(Q & (0u32.wrapping_sub(z >> 31)))
 }
 
-pub fn ntt_forward(a: &mut [u16; FALCON_512_N]) {
+pub(crate) fn ntt_forward(a: &mut [u16; FALCON_512_N]) {
     let n = FALCON_512_N;
     let mut t = n;
     let mut m = 1;
@@ -140,9 +140,8 @@ pub fn ntt_forward(a: &mut [u16; FALCON_512_N]) {
     }
 }
 
-pub fn ntt_inverse(a: &mut [u16; FALCON_512_N]) {
+pub(crate) fn ntt_inverse(a: &mut [u16; FALCON_512_N]) {
     let n = FALCON_512_N;
-    let logn = 9;
     let mut t = 1;
     let mut m = n;
 
@@ -168,34 +167,32 @@ pub fn ntt_inverse(a: &mut [u16; FALCON_512_N]) {
         m = hm;
     }
 
-    let mut ni = R;
-    for _ in 0..logn {
-        ni = field_halve(ni);
-    }
+    // Final scaling by N⁻¹. The reference halves R nine times to get here;
+    // for n = 512 that is always 128.
     for i in 0..n {
-        a[i] = montgomery_mul(a[i] as u32, ni) as u16;
+        a[i] = montgomery_mul(a[i] as u32, FALCON_512_NI) as u16;
     }
 }
 
-pub fn poly_to_montgomery(f: &mut [u16; FALCON_512_N]) {
+fn poly_to_montgomery(f: &mut [u16; FALCON_512_N]) {
     for i in 0..FALCON_512_N {
         f[i] = montgomery_mul(f[i] as u32, R2) as u16;
     }
 }
 
-pub fn poly_pointwise_mul(f: &mut [u16; FALCON_512_N], g: &[u16; FALCON_512_N]) {
+pub(crate) fn poly_pointwise_mul(f: &mut [u16; FALCON_512_N], g: &[u16; FALCON_512_N]) {
     for i in 0..FALCON_512_N {
         f[i] = montgomery_mul(f[i] as u32, g[i] as u32) as u16;
     }
 }
 
-pub fn poly_sub(f: &mut [u16; FALCON_512_N], g: &[u16; FALCON_512_N]) {
+pub(crate) fn poly_sub(f: &mut [u16; FALCON_512_N], g: &[u16; FALCON_512_N]) {
     for i in 0..FALCON_512_N {
         f[i] = field_sub(f[i] as u32, g[i] as u32) as u16;
     }
 }
 
-pub fn poly_prepare_for_mul(h: &mut [u16; FALCON_512_N]) {
+pub(crate) fn poly_prepare_for_mul(h: &mut [u16; FALCON_512_N]) {
     ntt_forward(h);
     poly_to_montgomery(h);
 }
