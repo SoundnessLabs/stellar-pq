@@ -1,11 +1,25 @@
 // Standalone, self-contained copy of contracts/falcon-512-core/src/verify.rs
 // + ntt.rs flattened so `rustc --emit=asm` can build it without cargo.
 //
-// `hash_to_point` is stubbed: it just calls into the well-vetted `sha3` crate
-// over PUBLIC inputs (nonce + message), so its CT properties are not part of
-// our threat model. We replace it with a deterministic stand-in that still
-// produces the same control-flow shape (rejection-sampling loop with
-// `while v >= Q { v -= Q; }`).
+// Fidelity to the real crate: every function the analysis reasons about --
+// field_add, field_sub, montgomery_mul, ntt_forward, ntt_inverse,
+// poly_pointwise_mul, poly_sub, poly_to_montgomery, is_short,
+// decode_sig_compressed, decode_pubkey -- is byte-identical to the crate
+// apart from brace style, and decode_pubkey's `debug_assert_eq!`, which
+// compiles out at the -Oz/-O3 levels analyzed here.
+//
+// Two deliberate structural differences:
+//
+//   * The real verifier hashes the message through a streaming session
+//     (Falcon512Verification::new -> absorb_message -> finalize) so message
+//     length is unbounded. This file keeps the one-shot shape, because
+//     chunking changes only how bytes reach SHAKE256, not any of the
+//     secret-dependent arithmetic above.
+//   * `hash_to_point` here stands in for the crate's `squeeze_challenge`.
+//     The real one feeds SHAKE256 over PUBLIC inputs (nonce + message), so
+//     its CT properties are out of scope; the stand-in is deterministic and
+//     keeps the same control-flow shape (rejection-sampling loop with the
+//     four bounded `field_sub` reductions).
 
 #![allow(dead_code)]
 #![crate_type = "lib"]
@@ -24,6 +38,7 @@ const L2_BOUND_512: u32 = 34034726;
 const Q0I: u32 = 12287;
 const R: u32 = 4091;
 const R2: u32 = 10952;
+const FALCON_512_NI: u32 = 128;
 
 // Twiddle tables stubbed (contents don't affect CT analysis of the ops).
 static GMB: [u16; 512] = [4091; 512];
@@ -41,12 +56,6 @@ pub fn field_add(x: u32, y: u32) -> u32 {
 pub fn field_sub(x: u32, y: u32) -> u32 {
     let d = x.wrapping_sub(y);
     d.wrapping_add(Q & (0u32.wrapping_sub(d >> 31)))
-}
-
-#[inline(always)]
-pub fn field_halve(x: u32) -> u32 {
-    let x = x.wrapping_add(Q & (0u32.wrapping_sub(x & 1)));
-    x >> 1
 }
 
 #[inline(always)]
@@ -83,7 +92,6 @@ pub fn ntt_forward(a: &mut [u16; FALCON_512_N]) {
 
 pub fn ntt_inverse(a: &mut [u16; FALCON_512_N]) {
     let n = FALCON_512_N;
-    let logn = 9;
     let mut t = 1;
     let mut m = n;
     while m > 1 {
@@ -105,9 +113,7 @@ pub fn ntt_inverse(a: &mut [u16; FALCON_512_N]) {
         t = dt;
         m = hm;
     }
-    let mut ni = R;
-    for _ in 0..logn { ni = field_halve(ni); }
-    for i in 0..n { a[i] = montgomery_mul(a[i] as u32, ni) as u16; }
+    for i in 0..n { a[i] = montgomery_mul(a[i] as u32, FALCON_512_NI) as u16; }
 }
 
 pub fn poly_to_montgomery(f: &mut [u16; FALCON_512_N]) {
@@ -222,7 +228,7 @@ impl FalconVerifier {
                 u += 1;
             }
         }
-        if (acc & ((1u32 << acc_len) - 1)) != 0 { return false; }
+        // 896 * 8 == 512 * 14, so the accumulator always drains.
         true
     }
 

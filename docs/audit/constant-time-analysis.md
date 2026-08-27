@@ -60,7 +60,7 @@ in [`ct-analysis/`](ct-analysis/):
   do not affect the *opcodes* the analyzer inspects.
 - [`falcon_verify_standalone.rs`](ct-analysis/falcon_verify_standalone.rs) —
   flattened union of `ntt.rs` + `verify.rs`, with one substitution:
-  `hash_to_point` is replaced by a stub that uses an LCG instead of
+  the challenge squeeze is replaced by a stub that uses an LCG instead of
   SHAKE256. The control-flow shape is preserved (rejection-sampling loop,
   `while v >= Q { v -= Q; }`). This is faithful for CT analysis because
   SHAKE256 lives in the `sha3` crate (not analyzed here) and its inputs
@@ -108,17 +108,17 @@ table because the operand is a "public parameter (length, count)".
 
 ## 4. Detailed finding
 
-### F-001 — Variable-time `udiv` from rejection-sampling loop in `hash_to_point` *(REMEDIATED)*
+### F-001 — Variable-time `udiv` from the challenge rejection-sampling loop *(REMEDIATED)*
 
 | Field | Value |
 | --- | --- |
 | Severity | Informational (no impact under threat model) |
 | Status | **Fixed** in the same commit as this report |
-| Location | `contracts/falcon-512-core/src/verify.rs::FalconVerifier::hash_to_point` — inlined into `verify_512` at `-Oz` |
+| Location | `contracts/falcon-512-core/src/verify.rs`, the challenge rejection-sampling loop (`Falcon512Verification::squeeze_challenge`; `hash_to_point` when this finding was raised) — inlined into the verify path at `-Oz` |
 | Architectures | `arm64` (`udiv`), `x86_64` (`divw`) |
 | Triggering opt level | `-Oz`, `-Os` (production); not present at `-O2`/`-O3` |
 
-**Description.** The body of `hash_to_point` contains the classic Falcon
+**Description.** The challenge-derivation loop contains the classic Falcon
 rejection-sampling reduction:
 
 ```rust

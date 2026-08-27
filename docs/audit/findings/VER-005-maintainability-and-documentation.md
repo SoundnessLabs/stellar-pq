@@ -97,13 +97,25 @@ more maintainable and clearly documented:
 ## Planned remediation
 
 - [x] **1.** Implemented as a **checked `false` return**, not `assert!`:
-      `hash_to_point` now returns `bool`, `verify_512` fails verification if
-      the `[0, Q)` guarantee is ever violated. The check survives release
-      builds and `__check_auth` stays panic-free. A `debug_assert_eq!` on the
-      40-byte nonce length was added alongside (see item 2).
-- [x] **2.** `hash_to_point` doc comment now spells out the unframed
-      `nonce || message` absorption, the concatenation-ambiguity example, and
-      the MUST-pass-exactly-40-nonce-bytes requirement for future callers.
+      the challenge squeeze returns `bool` and verification fails if the
+      `[0, Q)` guarantee is ever violated. The check survives release builds
+      and `__check_auth` stays panic-free.
+- [x] **2.** The challenge-derivation comment spells out the unframed
+      `nonce || message` absorption and why the framing is unambiguous only
+      for a fixed-length nonce.
+
+      > **Note for the merged branch.** Both items landed on
+      > `hash_to_point`. VER-003 later split that function along the
+      > streaming lifecycle — the nonce is absorbed in
+      > `Falcon512Verification::new` and the rejection sampling became
+      > `squeeze_challenge` — because its `message: &[u8]` parameter
+      > required the whole message in memory, which is the limit VER-003
+      > was asked to remove. Both remediations were carried across and are
+      > verifiable there; `hash_to_point` no longer exists once VER-003 is
+      > merged. Item 2's separate `debug_assert` on the nonce length was
+      > dropped in the merge: the nonce is now taken as `signature[1..41]`
+      > rather than from a caller, so no caller can supply a wrong length
+      > and the assertion would have been trivially true.
 - [x] **3.** Smart-account module docs gained an "Instance-storage footprint"
       section covering the 897-byte key, the 64 KiB shared entry limit, and
       the budgeting rule for future instance state.

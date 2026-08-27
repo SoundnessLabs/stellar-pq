@@ -157,12 +157,11 @@ impl Falcon512Verification {
 
         // The challenge is SHAKE256(nonce || message), absorbed with no
         // separator between them, as in the reference. Only the
-        // concatenation matters, so the framing is unambiguous only because
-        // the nonce is always these fixed 40 bytes.
-        let nonce = &signature[1..41];
-        debug_assert_eq!(nonce.len(), 40, "the challenge needs a 40-byte nonce");
+        // concatenation matters, so the framing would be ambiguous for a
+        // variable-length nonce; here it is always these fixed 40 bytes,
+        // taken from the signature rather than from any caller.
         let mut hasher = Shake256::default();
-        hasher.update(nonce);
+        hasher.update(&signature[1..41]);
 
         // Move h into the NTT domain and Montgomery form for the pointwise
         // multiplication in `finalize`.
@@ -249,11 +248,11 @@ impl FalconVerifier {
 
     /// Checks `||(c0 - s2·h, s2)|| ≤ L2_BOUND_512`.
     ///
-    /// Validates nothing, so it can return `true` for garbage. `verify_512`
-    /// is what guarantees the inputs:
+    /// Validates nothing, so it can return `true` for garbage. The
+    /// verification session is what guarantees the inputs:
     ///
-    /// * `c0`: canonical, in `[0, Q)` (`hash_to_point`)
-    /// * `s2`: in `[-2047, 2047]` (`decode_sig_compressed`)
+    /// * `c0`: canonical, in `[0, Q)` ([`Falcon512Verification::finalize`])
+    /// * `s2`: in `[-MAX_SIG_COEFF, MAX_SIG_COEFF]` (`decode_sig_compressed`)
     /// * `h`: canonical, Montgomery, NTT domain (`poly_prepare_for_mul`)
     fn verify_raw_512(
         c0: &[u16; FALCON_512_N],
@@ -601,6 +600,123 @@ mod tests {
         body[1] = 0b1000_0000;
         let mut s2 = [0i16; FALCON_512_N];
         assert_eq!(FalconVerifier::decode_sig_compressed(&body[..600], &mut s2), 0);
+    }
+
+    /// Truncating the compressed body must be rejected wherever the cut
+    /// lands, not only on a whole-byte boundary: the decoder consumes a
+    /// bit at a time and has to run out cleanly.
+    #[test]
+    fn test_decode_rejects_truncation_at_every_length() {
+        let mut coeffs = [0i16; FALCON_512_N];
+        for (i, c) in coeffs.iter_mut().enumerate() {
+            *c = ((i % 401) as i16) - 200;
+        }
+        let mut body = [0u8; 1024];
+        let full_len = encode_sig_body(&coeffs, &mut body);
+
+        for cut in 1..full_len {
+            let mut s2 = [0i16; FALCON_512_N];
+            assert_eq!(
+                FalconVerifier::decode_sig_compressed(&body[..cut], &mut s2),
+                0,
+                "body truncated to {cut} of {full_len} bytes must not decode"
+            );
+        }
+        // The untruncated body still decodes, so the loop above is not
+        // rejecting for some unrelated reason.
+        let mut s2 = [0i16; FALCON_512_N];
+        assert_eq!(
+            FalconVerifier::decode_sig_compressed(&body[..full_len], &mut s2),
+            full_len
+        );
+        assert_eq!(s2, coeffs);
+    }
+
+    /// The bits after the final coefficient are padding to the byte
+    /// boundary and must be zero; a nonzero tail bit is a distinct encoding
+    /// of the same polynomial and is rejected.
+    #[test]
+    fn test_decode_rejects_nonzero_unused_bits() {
+        // All-zero coefficients take 9 bits each: 4608 bits, a whole 576
+        // bytes with no spare bits to dirty. Giving one coefficient a
+        // magnitude of 128 adds a single unary bit, so the body ends 1 bit
+        // into its last byte and leaves 7 unused padding bits.
+        let mut coeffs = [0i16; FALCON_512_N];
+        coeffs[0] = 128;
+        let mut body = [0u8; 1024];
+        let len = encode_sig_body(&coeffs, &mut body);
+        assert_eq!(len, 577, "expected a body ending mid-byte");
+
+        let mut s2 = [0i16; FALCON_512_N];
+        assert_eq!(
+            FalconVerifier::decode_sig_compressed(&body[..len], &mut s2),
+            len,
+            "baseline body should decode"
+        );
+        assert_eq!(s2[0], 128);
+
+        // Each of the 7 unused low bits of the final byte must be rejected;
+        // they are padding, and a nonzero one is a second encoding of the
+        // same polynomial.
+        for bit in 0..7 {
+            let mut dirty = body;
+            dirty[len - 1] |= 1u8 << bit;
+            assert_ne!(dirty[len - 1], body[len - 1], "bit {bit} should be spare");
+            let mut s2 = [0i16; FALCON_512_N];
+            assert_eq!(
+                FalconVerifier::decode_sig_compressed(&dirty[..len], &mut s2),
+                0,
+                "nonzero unused bit {bit} must be rejected"
+            );
+        }
+    }
+
+    /// A public key whose packed 14-bit coefficients are not all below Q
+    /// must be rejected, wherever the offending coefficient sits.
+    #[test]
+    fn test_decode_pubkey_rejects_out_of_range_coefficient() {
+        let mut h = [0u16; FALCON_512_N];
+
+        // All-ones payload: the very first coefficient is 0x3FFF > Q.
+        let mut pk = [0xffu8; FALCON_512_PUBKEY_SIZE];
+        pk[0] = 9;
+        assert!(!FalconVerifier::decode_pubkey(&pk, &mut h));
+
+        // A valid all-zero key, then force one coefficient past Q at a few
+        // positions spread across the payload.
+        for pos in [1usize, 100, 448, 895] {
+            let mut pk = [0u8; FALCON_512_PUBKEY_SIZE];
+            pk[0] = 9;
+            pk[pos] = 0xff;
+            if pos + 1 < FALCON_512_PUBKEY_SIZE {
+                pk[pos + 1] = 0xff;
+            }
+            assert!(
+                !FalconVerifier::decode_pubkey(&pk, &mut h),
+                "0xffff at byte {pos} should push a coefficient >= Q"
+            );
+        }
+
+        // The clean key still decodes.
+        let mut pk = [0u8; FALCON_512_PUBKEY_SIZE];
+        pk[0] = 9;
+        assert!(FalconVerifier::decode_pubkey(&pk, &mut h));
+    }
+
+    /// A public key of any length other than exactly 897 bytes is rejected
+    /// before decoding, including one byte short and one byte long.
+    #[test]
+    fn test_decode_pubkey_rejects_wrong_length() {
+        let mut h = [0u16; FALCON_512_N];
+        let full = parseable_pubkey();
+        for len in [0usize, 1, 896, 898] {
+            let mut buf = [9u8; FALCON_512_PUBKEY_SIZE + 1];
+            buf[..full.len().min(len)].copy_from_slice(&full[..full.len().min(len)]);
+            assert!(
+                !FalconVerifier::decode_pubkey(&buf[..len], &mut h),
+                "pubkey of {len} bytes must be rejected"
+            );
+        }
     }
 
     #[test]
