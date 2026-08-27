@@ -35,7 +35,7 @@
 //!     make the first signature byte malleable.
 //!   * `0x59` (CT/fixed-width) requires a different decoder, which does not
 //!     exist here; it is also rejected redundantly by the size gate
-//!     (809 > `FALCON_SIG_MAX_SIZE` = 666).
+//!     (809 > `FALCON_SIG_MAX_SIZE` = 752).
 //!
 //! Natural- versus padded-form canonicity is enforced on the *body*
 //! (see `verify_512`):
@@ -61,42 +61,58 @@ use crate::ntt::{
     field_sub, ntt_forward, ntt_inverse, poly_pointwise_mul, poly_prepare_for_mul, poly_sub,
 };
 use crate::{
-    FALCON_512_N, FALCON_512_PUBKEY_SIZE, FALCON_512_SIG_PADDED_SIZE, FALCON_MAX_MESSAGE_SIZE,
-    FALCON_SIG_MAX_SIZE, FALCON_SIG_MIN_SIZE, L2_BOUND_512, Q,
+    FALCON_512_N, FALCON_512_PUBKEY_SIZE, FALCON_512_SIG_PADDED_SIZE, FALCON_SIG_MAX_SIZE,
+    FALCON_SIG_MIN_SIZE, L2_BOUND_512, Q,
 };
+use sha3::{
+    digest::{ExtendableOutput, Update, XofReader},
+    Shake256,
+};
+
+/// Largest coefficient magnitude a valid signature can contain: one
+/// coefficient with `|c| > ⌊√L2_BOUND_512⌋` exceeds the squared-norm bound
+/// on its own, so the decoder rejects it without looking at the rest.
+const MAX_SIG_COEFF: u32 = 5833;
+const _: () = assert!(MAX_SIG_COEFF * MAX_SIG_COEFF <= L2_BOUND_512);
+const _: () = assert!((MAX_SIG_COEFF + 1) * (MAX_SIG_COEFF + 1) > L2_BOUND_512);
 
 /// Falcon-512 signature verifier. Stateless; all methods are associated
 /// functions.
 pub struct FalconVerifier;
 
-impl FalconVerifier {
-    /// Verifies a Falcon-512 signature.
-    ///
-    /// Takes the 897-byte public key, the signed message (at most
-    /// `FALCON_MAX_MESSAGE_SIZE` bytes), and a compressed or padded
-    /// signature. Returns `false` on any failure, and never panics.
-    pub fn verify_512(pubkey: &[u8], message: &[u8], signature: &[u8]) -> bool {
-        // Step 1: Validate public key format
+/// Streaming Falcon-512 verification.
+///
+/// [`Falcon512Verification::new`] parses the public key and signature and
+/// starts the message hash; [`Falcon512Verification::absorb_message`] feeds
+/// the message in chunks of any size; [`Falcon512Verification::finalize`]
+/// returns the verdict. Only the concatenation of the chunks matters, so a
+/// caller can hash a message of any length through a small buffer.
+/// [`FalconVerifier::verify_512`] is the one-shot form of the same
+/// computation.
+pub struct Falcon512Verification {
+    h: [u16; FALCON_512_N],
+    s2: [i16; FALCON_512_N],
+    hasher: Shake256,
+}
+
+impl Falcon512Verification {
+    /// Parses `pubkey` and `signature`. Returns `None` when either is
+    /// malformed; the message plays no part in these checks.
+    pub fn new(pubkey: &[u8], signature: &[u8]) -> Option<Self> {
+        // Validate public key format
         if pubkey.len() != FALCON_512_PUBKEY_SIZE {
-            return false;
+            return None;
         }
         // Header byte encodes logn; for Falcon-512, logn = 9 (since n = 2^9 = 512)
         const FALCON_512_LOGN: u8 = 9;
         if pubkey[0] != FALCON_512_LOGN {
-            return false;
+            return None;
         }
 
-        // Callers gate this too. Repeated here because the caller may have
-        // copied into a fixed buffer already, and a longer slice would hide
-        // the truncation.
-        if message.len() > FALCON_MAX_MESSAGE_SIZE {
-            return false;
-        }
-
-        // Step 2: Parse signature header and determine format
+        // Parse signature header and determine format
         let sig_len = signature.len();
         if sig_len < FALCON_SIG_MIN_SIZE as usize || sig_len > FALCON_SIG_MAX_SIZE as usize {
-            return false;
+            return None;
         }
         // Detached compressed Falcon-512 signatures — natural-length and
         // 666-byte padded alike — always carry header 0x39 = 0x30 | logn
@@ -104,58 +120,131 @@ impl FalconVerifier {
         // belongs only to the nonce-less tail of the NIST crypto_sign
         // envelope, and 0x59 (CT) has no decoder here, so any header other
         // than 0x39 is rejected. Natural vs. padded form is determined from
-        // decoder consumption and total length (Step 5 below), not from the
-        // header.
+        // decoder consumption and total length (below), not from the header.
         const FALCON_512_SIG_HEADER: u8 = 0x30 | FALCON_512_LOGN;
         if signature[0] != FALCON_512_SIG_HEADER {
-            return false;
+            return None;
         }
 
-        // Step 3: Decode public key polynomial h
+        // Decode public key polynomial h
         let mut h = [0u16; FALCON_512_N];
-        if !Self::decode_pubkey(pubkey, &mut h) {
-            return false;
+        if !FalconVerifier::decode_pubkey(pubkey, &mut h) {
+            return None;
         }
 
-        // Step 4: Extract nonce (bytes 1-40)
-        let nonce = &signature[1..41];
-
-        // Step 5: Decode signature polynomial s2
+        // Decode signature polynomial s2 (body follows the 40-byte nonce)
         let mut s2 = [0i16; FALCON_512_N];
         let sig_data = &signature[41..];
-        let decoded_len = Self::decode_sig_compressed(sig_data, &mut s2);
+        let decoded_len = FalconVerifier::decode_sig_compressed(sig_data, &mut s2);
         if decoded_len == 0 {
-            return false;
+            return None;
         }
 
         // Canonicity: the body must decode exactly, or be the 666-byte
-        // padded form with a zero tail. Any other padded length is rejected,
-        // so a signature cannot be re-encoded at an arbitrary length in
-        // between and still verify.
-        let total_sig_len = signature.len(); // header(1) + nonce(40) + body
+        // padded form with a zero tail. Any other zero-padded length is
+        // rejected, so one signature cannot be re-encoded at an arbitrary
+        // length and still verify.
         let is_natural = decoded_len == sig_data.len();
-        let is_padded = total_sig_len == FALCON_512_SIG_PADDED_SIZE;
+        let is_padded = sig_len == FALCON_512_SIG_PADDED_SIZE;
         if !is_natural && !is_padded {
-            return false;
+            return None;
         }
-        // Trailing bytes (padded form only) must be zero.
         for i in decoded_len..sig_data.len() {
             if sig_data[i] != 0 {
-                return false;
+                return None;
             }
         }
 
-        // Step 6: hash to the challenge polynomial. `false` means a
-        // coefficient escaped [0, Q), which cannot happen as written.
-        let mut c0 = [0u16; FALCON_512_N];
-        if !Self::hash_to_point(nonce, message, &mut c0) {
-            return false;
-        }
+        // The challenge is SHAKE256(nonce || message), absorbed with no
+        // separator between them, as in the reference. Only the
+        // concatenation matters, so the framing is unambiguous only because
+        // the nonce is always these fixed 40 bytes.
+        let nonce = &signature[1..41];
+        debug_assert_eq!(nonce.len(), 40, "the challenge needs a 40-byte nonce");
+        let mut hasher = Shake256::default();
+        hasher.update(nonce);
 
-        // Step 7: move h into the NTT domain and Montgomery form, then verify.
+        // Move h into the NTT domain and Montgomery form for the pointwise
+        // multiplication in `finalize`.
         poly_prepare_for_mul(&mut h);
 
-        Self::verify_raw_512(&c0, &s2, &h)
+        Some(Self { h, s2, hasher })
+    }
+
+    /// Absorbs the next message chunk.
+    pub fn absorb_message(&mut self, chunk: &[u8]) {
+        self.hasher.update(chunk);
+    }
+
+    /// Returns whether the signature is valid over the absorbed message.
+    pub fn finalize(self) -> bool {
+        let mut c0 = [0u16; FALCON_512_N];
+        if !Self::squeeze_challenge(self.hasher, &mut c0) {
+            return false;
+        }
+        FalconVerifier::verify_raw_512(&c0, &self.s2, &self.h)
+    }
+
+    /// Squeezes the challenge polynomial out of the finished hash state:
+    /// SHAKE256 output, rejection-sampled to uniform elements of `Z_q`.
+    /// Returns `false` if a coefficient lands outside `[0, Q)`, which the
+    /// bounds below rule out. Checked rather than asserted because
+    /// `__check_auth` must not panic. `c0` is garbage on `false`.
+    fn squeeze_challenge(hasher: Shake256, c0: &mut [u16; FALCON_512_N]) -> bool {
+        let mut xof = hasher.finalize_xof();
+
+        let mut remaining = FALCON_512_N;
+        let mut idx = 0;
+
+        while remaining > 0 {
+            let mut buf = [0u8; 2];
+            xof.read(&mut buf);
+
+            let w = ((buf[0] as u32) << 8) | (buf[1] as u32);
+
+            const ACCEPT_THRESHOLD: u32 = 5 * Q;
+            if w < ACCEPT_THRESHOLD {
+                // Reduce w mod Q with four conditional subtractions; the
+                // accept threshold guarantees w < 5*Q. A `while v >= Q`
+                // loop is off limits: LLVM rewrites it as `w % Q` and
+                // lowers that to hardware UDIV at -Oz/-Os, which is not
+                // constant time (see docs/audit/constant-time-analysis.md).
+                let mut v = w;
+                v = field_sub(v, Q);
+                v = field_sub(v, Q);
+                v = field_sub(v, Q);
+                v = field_sub(v, Q);
+                if v >= Q {
+                    return false;
+                }
+                c0[idx] = v as u16;
+                idx += 1;
+                remaining -= 1;
+            }
+        }
+
+        true
+    }
+}
+
+impl FalconVerifier {
+    /// Verifies a Falcon-512 signature.
+    ///
+    /// # Arguments
+    /// * `pubkey` - 897-byte Falcon-512 public key
+    /// * `message` - The message that was signed, of any length
+    /// * `signature` - The signature bytes (compressed or padded format only)
+    ///
+    /// # Returns
+    /// `true` if the signature is valid, `false` otherwise.
+    pub fn verify_512(pubkey: &[u8], message: &[u8], signature: &[u8]) -> bool {
+        match Falcon512Verification::new(pubkey, signature) {
+            Some(mut v) => {
+                v.absorb_message(message);
+                v.finalize()
+            }
+            None => false,
+        }
     }
 
     /// Checks `||(c0 - s2·h, s2)|| ≤ L2_BOUND_512`.
@@ -315,7 +404,9 @@ impl FalconVerifier {
                     break;
                 }
                 m += 128;
-                if m > 2047 {
+                // Magnitudes past MAX_SIG_COEFF cannot appear in any valid
+                // signature; rejecting them here also bounds the unary run.
+                if m > MAX_SIG_COEFF {
                     return 0;
                 }
             }
@@ -334,60 +425,6 @@ impl FalconVerifier {
         v
     }
 
-    /// Hashes nonce || message to a challenge polynomial using SHAKE256 with rejection sampling.
-    ///
-    /// Nonce and message are absorbed with no separator, as in the
-    /// reference, so only the concatenation matters: `[1,1] || [2,2]` and
-    /// `[1] || [1,2,2]` hash the same. Unambiguous only with a fixed-length
-    /// nonce. Pass 40 bytes.
-    ///
-    /// Returns `false` if a coefficient lands outside `[0, Q)`, which the
-    /// bounds below rule out. Checked rather than asserted because
-    /// `__check_auth` must not panic. `c0` is garbage on `false`.
-    fn hash_to_point(nonce: &[u8], message: &[u8], c0: &mut [u16; FALCON_512_N]) -> bool {
-        use sha3::{
-            digest::{ExtendableOutput, Update, XofReader},
-            Shake256,
-        };
-
-        debug_assert_eq!(nonce.len(), 40, "hash_to_point requires a 40-byte nonce");
-
-        let mut hasher = Shake256::default();
-        hasher.update(nonce);
-        hasher.update(message);
-        let mut xof = hasher.finalize_xof();
-
-        let mut remaining = FALCON_512_N;
-        let mut idx = 0;
-
-        while remaining > 0 {
-            let mut buf = [0u8; 2];
-            xof.read(&mut buf);
-
-            let w = ((buf[0] as u32) << 8) | (buf[1] as u32);
-
-            const ACCEPT_THRESHOLD: u32 = 5 * Q;
-            if w < ACCEPT_THRESHOLD {
-                // w < 5*Q, so four conditional subtractions reduce it. Do
-                // not rewrite as a loop: LLVM turns `while v >= Q` into
-                // `w % Q` and lowers it to UDIV at -Oz/-Os, which is not
-                // constant time. See docs/audit/constant-time-analysis.md.
-                let mut v = w;
-                v = field_sub(v, Q);
-                v = field_sub(v, Q);
-                v = field_sub(v, Q);
-                v = field_sub(v, Q);
-                if v >= Q {
-                    return false;
-                }
-                c0[idx] = v as u16;
-                idx += 1;
-                remaining -= 1;
-            }
-        }
-
-        true
-    }
 }
 
 #[cfg(test)]
@@ -438,15 +475,6 @@ mod tests {
     }
 
     #[test]
-    fn test_message_too_long_rejected() {
-        let pk = [9u8; FALCON_512_PUBKEY_SIZE];
-        let msg = [0u8; FALCON_MAX_MESSAGE_SIZE + 1];
-        let mut sig = [0u8; 666];
-        sig[0] = 0x39;
-        assert!(!FalconVerifier::verify_512(&pk, &msg, &sig));
-    }
-
-    #[test]
     fn test_envelope_header_0x29_rejected() {
         // 0x29 = 0x20 | logn labels the nonce-less tail of the NIST
         // crypto_sign envelope, not a detached signature; the header gate
@@ -466,5 +494,139 @@ mod tests {
         let mut sig = [0u8; 809];
         sig[0] = 0x59;
         assert!(!FalconVerifier::verify_512(&pk, b"", &sig));
+    }
+
+    /// Compressed-encodes `coeffs` into `out` (sign bit, 7 low bits,
+    /// unary high part, MSB-first, zero-padded to a byte). Returns the
+    /// body length in bytes.
+    fn encode_sig_body(coeffs: &[i16; FALCON_512_N], out: &mut [u8; 1024]) -> usize {
+        fn push(out: &mut [u8; 1024], nbits: &mut usize, bit: u32) {
+            if bit != 0 {
+                out[*nbits >> 3] |= 128 >> (*nbits & 7);
+            }
+            *nbits += 1;
+        }
+        let mut nbits = 0usize;
+        for &c in coeffs.iter() {
+            let m = c.unsigned_abs() as u32;
+            push(out, &mut nbits, (c < 0) as u32);
+            for i in (0..7).rev() {
+                push(out, &mut nbits, (m >> i) & 1);
+            }
+            for _ in 0..(m >> 7) {
+                push(out, &mut nbits, 0);
+            }
+            push(out, &mut nbits, 1);
+        }
+        nbits.div_ceil(8)
+    }
+
+    /// A well-formed 897-byte public key: header 0x09 over a payload whose
+    /// 14-bit coefficients all land below Q.
+    fn parseable_pubkey() -> [u8; FALCON_512_PUBKEY_SIZE] {
+        [9u8; FALCON_512_PUBKEY_SIZE]
+    }
+
+    /// A signature of exactly `FALCON_SIG_MIN_SIZE` bytes that parses:
+    /// header 0x39, zero nonce, all-zero coefficients (9 bits each).
+    fn minimal_parseable_sig() -> [u8; FALCON_SIG_MIN_SIZE as usize] {
+        let coeffs = [0i16; FALCON_512_N];
+        let mut body = [0u8; 1024];
+        let body_len = encode_sig_body(&coeffs, &mut body);
+        assert_eq!(1 + 40 + body_len, FALCON_SIG_MIN_SIZE as usize);
+
+        let mut sig = [0u8; FALCON_SIG_MIN_SIZE as usize];
+        sig[0] = 0x39;
+        sig[41..].copy_from_slice(&body[..body_len]);
+        sig
+    }
+
+    #[test]
+    fn test_min_size_signature_parses() {
+        let sig = minimal_parseable_sig();
+        assert!(Falcon512Verification::new(&parseable_pubkey(), &sig).is_some());
+        // The pipeline must run to the norm check without panicking; an
+        // all-zero s2 leaves s1 = c0, whose norm is far above the bound.
+        assert!(!FalconVerifier::verify_512(&parseable_pubkey(), b"msg", &sig));
+    }
+
+    #[test]
+    fn test_sig_size_gate_bounds() {
+        let pk = parseable_pubkey();
+        let mut sig = [0u8; FALCON_SIG_MAX_SIZE as usize + 1];
+        sig[0] = 0x39;
+        // One byte under the minimum and one over the maximum.
+        assert!(Falcon512Verification::new(&pk, &sig[..FALCON_SIG_MIN_SIZE as usize - 1]).is_none());
+        assert!(Falcon512Verification::new(&pk, &sig).is_none());
+    }
+
+    #[test]
+    fn test_decode_accepts_norm_bounded_coefficients() {
+        // 2048 and 5833 both square to at most L2_BOUND_512, so the decoder
+        // must let them through to the norm check.
+        for value in [2048i16, 5833, -5833] {
+            let mut coeffs = [0i16; FALCON_512_N];
+            coeffs[0] = value;
+            let mut body = [0u8; 1024];
+            let body_len = encode_sig_body(&coeffs, &mut body);
+
+            let mut s2 = [0i16; FALCON_512_N];
+            let consumed = FalconVerifier::decode_sig_compressed(&body[..body_len], &mut s2);
+            assert_eq!(consumed, body_len, "value {value} should decode");
+            assert_eq!(s2[0], value);
+        }
+    }
+
+    #[test]
+    fn test_decode_rejects_over_norm_coefficient() {
+        // 5834² alone exceeds L2_BOUND_512; no valid signature can carry it.
+        let mut coeffs = [0i16; FALCON_512_N];
+        coeffs[0] = 5834;
+        let mut body = [0u8; 1024];
+        let body_len = encode_sig_body(&coeffs, &mut body);
+
+        let mut s2 = [0i16; FALCON_512_N];
+        assert_eq!(
+            FalconVerifier::decode_sig_compressed(&body[..body_len], &mut s2),
+            0
+        );
+    }
+
+    #[test]
+    fn test_decode_rejects_negative_zero() {
+        // Sign bit set with magnitude zero has no canonical meaning.
+        let mut body = [0u8; 1024];
+        // First coefficient: 1 (sign) 0000000 (low bits) 1 (stop), rest zero.
+        body[0] = 0b1000_0000;
+        body[1] = 0b1000_0000;
+        let mut s2 = [0i16; FALCON_512_N];
+        assert_eq!(FalconVerifier::decode_sig_compressed(&body[..600], &mut s2), 0);
+    }
+
+    #[test]
+    fn test_chunked_message_matches_one_shot() {
+        // The challenge depends only on the concatenated message, not on
+        // chunk boundaries or message length.
+        let pk = parseable_pubkey();
+        let sig = minimal_parseable_sig();
+        let msg = [7u8; 40_000];
+
+        let one_shot = {
+            let mut v = Falcon512Verification::new(&pk, &sig).unwrap();
+            v.absorb_message(&msg);
+            let mut c0 = [0u16; FALCON_512_N];
+            Falcon512Verification::squeeze_challenge(v.hasher, &mut c0);
+            c0
+        };
+
+        for chunk_size in [1usize, 3, 1024, 40_000] {
+            let mut v = Falcon512Verification::new(&pk, &sig).unwrap();
+            for chunk in msg.chunks(chunk_size) {
+                v.absorb_message(chunk);
+            }
+            let mut c0 = [0u16; FALCON_512_N];
+            Falcon512Verification::squeeze_challenge(v.hasher, &mut c0);
+            assert_eq!(c0, one_shot, "chunk size {chunk_size}");
+        }
     }
 }

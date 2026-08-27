@@ -8,26 +8,24 @@
 mod ntt;
 pub mod verify;
 
-pub use verify::FalconVerifier;
+pub use verify::{Falcon512Verification, FalconVerifier};
 
 // Falcon-512 parameters (fixed by the NIST submission).
 pub const FALCON_512_LOGN: u32 = 9;
 pub const FALCON_512_N: usize = 512;
 pub const FALCON_512_PUBKEY_SIZE: usize = 897;
 
-/// Largest signature accepted, in bytes. Compressed runs up to 666 and
-/// padded is exactly 666, so this also rejects the 809-byte CT format.
-pub const FALCON_SIG_MAX_SIZE: u32 = 666;
+/// Largest accepted signature: the maximum length of a variable-length
+/// compressed Falcon-512 signature. Also rejects the 809-byte constant-time
+/// format, which has no decoder here.
+pub const FALCON_SIG_MAX_SIZE: u32 = 752;
 
-/// Minimum size: 1 header byte + 40 nonce bytes + at least one polynomial byte.
-pub const FALCON_SIG_MIN_SIZE: u32 = 42;
+/// Smallest decodable signature: 1 header byte + 40 nonce bytes + 576 body
+/// bytes (512 coefficients at no fewer than 9 bits each).
+pub const FALCON_SIG_MIN_SIZE: u32 = 617;
 
 /// Exact size of a Falcon-512 signature in padded format.
 pub const FALCON_512_SIG_PADDED_SIZE: usize = 666;
-
-/// Longest message `verify_512` will hash. The contract entry points cap it
-/// too, so oversized input is rejected instead of truncated into a buffer.
-pub const FALCON_MAX_MESSAGE_SIZE: usize = 16384;
 
 /// The prime modulus for Falcon ring arithmetic.
 pub const Q: u32 = 12289;
