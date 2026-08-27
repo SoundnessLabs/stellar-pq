@@ -19,28 +19,41 @@
 //! 3. **Verify norm**: Check that ||(s1, s)|| ≤ bound
 //!    The signature is valid iff the L2 norm of (s1, s) is small enough
 //!
-//! # Accepted signature formats
+//! # Accepted signature format
 //!
-//! The header byte's low nibble must equal `logn = 9`. The high nibble
-//! selects the encoding family and **both `0x2X` and `0x3X` are accepted**,
-//! because real Falcon-512 signers disagree on the nibble: the official NIST
-//! Round-3 KAT vectors (and `falcon.py`) emit `0x29` with a *variable-length*
-//! compressed body, while PQClean `falcon-512/clean` and this project's
-//! `falcon-wasm` signer emit `0x39` for compressed and `0x29` for the
-//! 666-byte padded form. The verifier therefore treats the high nibble
-//! loosely and enforces canonicity on the *body* instead (see `verify_512`):
+//! The verifier accepts exactly the detached compressed Falcon-512 framing:
+//!
+//! ```text
+//! 0x39 || nonce[40] || compressed(s2) [|| zero padding to 666 bytes]
+//! ```
+//!
+//! The header byte is fixed: `0x39 = 0x30 | logn` (logn = 9). Every
+//! conforming Falcon-512 signer — the reference C implementation, PQClean
+//! `falcon-512/clean`, `falcon.py`, and this project's `falcon-wasm` — emits
+//! `0x39` for detached compressed signatures, natural-length and 666-byte
+//! padded alike (Falcon Round-3 spec §3.11.3–4). Two related headers are
+//! deliberately rejected:
+//!
+//!   * `0x29` (`0x20 | logn`) labels only the *nonce-less* signature tail
+//!     inside the NIST `crypto_sign` signed-message envelope
+//!     (`sig_len || nonce || message || 0x29 || compressed(s2)`); it is not
+//!     a valid header for the detached layout above, and accepting it would
+//!     make the first signature byte malleable.
+//!   * `0x59` (CT/fixed-width) requires a different decoder, which does not
+//!     exist here; it is also rejected redundantly by the size gate
+//!     (809 > `FALCON_SIG_MAX_SIZE` = 666).
+//!
+//! Natural- versus padded-form canonicity is enforced on the *body*
+//! (see `verify_512`):
 //!
 //!   * the compressed body must decode exactly (no leftover bytes), **or**
 //!   * the signature must be the fixed padded size
 //!     (`FALCON_512_SIG_PADDED_SIZE` = 666 bytes) with an all-zero tail.
 //!
-//! Any other zero-padded length is rejected. The constant-time (CT, `0x5X`)
-//! format is 809 bytes and is rejected by the size gate; its decoder path
-//! does not exist.
-//!
-//! Because both the compressed and padded encodings of the same underlying
-//! signature verify, the scheme is EUF-CMA (no forgery) but not strongly
-//! non-malleable at the byte level. Consumers that need a unique signature
+//! Any other zero-padded length is rejected. The natural-length and 666-byte
+//! padded encodings of the same underlying signature both verify, so the
+//! scheme is EUF-CMA (no forgery) but byte-level uniqueness is still not
+//! guaranteed across the two forms. Consumers that need a unique signature
 //! identifier must not key on the raw bytes; the smart-account layer is
 //! unaffected because Soroban's `signature_payload` (not the signature bytes)
 //! is the replay key.
@@ -98,24 +111,16 @@ impl FalconVerifier {
         if sig_len < FALCON_SIG_MIN_SIZE as usize || sig_len > FALCON_SIG_MAX_SIZE as usize {
             return false;
         }
-        let sig_header = signature[0];
-        if (sig_header & 0x0F) != FALCON_512_LOGN {
-            return false;
-        }
-        // The high nibble of the header selects the encoding family. Real
-        // signers disagree on which nibble means what (see the module-level
-        // "Accepted signature formats" docs): the NIST Round-3 KAT and
-        // falcon.py use 0x2X for variable-length compressed signatures, while
-        // PQClean and the falcon-wasm signer use 0x3X for compressed and 0x2X
-        // for the 666-byte padded form. We therefore accept BOTH 0x2X and
-        // 0x3X and do not bind the nibble to a particular body length;
-        // canonicity is enforced on the decoded body instead (Step 5 below).
-        //
-        // 0x5X (CT, 809 bytes) is rejected here and, redundantly, by the size
-        // gate above (809 > FALCON_SIG_MAX_SIZE = 666). Reference: Falcon NIST
-        // Round-3 submission §3.11.1.
-        let fmt = sig_header & 0xF0;
-        if fmt != 0x20 && fmt != 0x30 {
+        // Detached compressed Falcon-512 signatures — natural-length and
+        // 666-byte padded alike — always carry header 0x39 = 0x30 | logn
+        // (see the module-level "Accepted signature format" docs). 0x29
+        // belongs only to the nonce-less tail of the NIST crypto_sign
+        // envelope, and 0x59 (CT) has no decoder here, so any header other
+        // than 0x39 is rejected. Natural vs. padded form is determined from
+        // decoder consumption and total length (Step 5 below), not from the
+        // header.
+        const FALCON_512_SIG_HEADER: u8 = 0x30 | FALCON_512_LOGN;
+        if signature[0] != FALCON_512_SIG_HEADER {
             return false;
         }
 
@@ -428,8 +433,20 @@ mod tests {
         let pk = [9u8; FALCON_512_PUBKEY_SIZE];
         let msg = [0u8; FALCON_MAX_MESSAGE_SIZE + 1];
         let mut sig = [0u8; 666];
-        sig[0] = 0x29;
+        sig[0] = 0x39;
         assert!(!FalconVerifier::verify_512(&pk, &msg, &sig));
+    }
+
+    #[test]
+    fn test_envelope_header_0x29_rejected() {
+        // 0x29 = 0x20 | logn labels the nonce-less tail of the NIST
+        // crypto_sign envelope, not a detached signature; the header gate
+        // must reject it. The KAT suite additionally proves that flipping
+        // a valid signature's 0x39 header to 0x29 invalidates it.
+        let pk = [9u8; FALCON_512_PUBKEY_SIZE];
+        let mut sig = [0u8; 666];
+        sig[0] = 0x29;
+        assert!(!FalconVerifier::verify_512(&pk, b"", &sig));
     }
 
     #[test]

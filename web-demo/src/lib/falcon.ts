@@ -108,8 +108,8 @@ export async function sign(
     // Regenerate keypair from seed (Falcon signing requires the full keypair context)
     const keypair = new Falcon512KeyPair(seed)
 
-    // Sign with compressed format (header 0x39)
-    // Use signPadded for padded format (header 0x29)
+    // Sign with natural-length compressed format (header 0x39)
+    // Use signPadded for the fixed 666-byte padded form (also header 0x39)
     const signature = keypair.sign(message, seed)
 
     keypair.free()
@@ -123,7 +123,8 @@ export async function sign(
 
 /**
  * Sign a message with padded signature format.
- * This produces signatures with header 0x29 (fixed 666 bytes).
+ * This produces fixed 666-byte signatures; padded signatures carry the
+ * same 0x39 header as natural-length compressed ones.
  */
 export async function signPadded(
   _privateKey: Uint8Array,
