@@ -125,12 +125,13 @@ if sig_len < FALCON_SIG_MIN_SIZE || sig_len > FALCON_SIG_MAX_SIZE {
 for i in 0..sig_len_usize { ... }
 ```
 
-`FALCON_SIG_MAX_SIZE = 666`, `FALCON_512_PUBKEY_SIZE = 897`, and
-`FALCON_MAX_MESSAGE_SIZE = 16384`. The Soroban host's deterministic gas
-metering bounds total instructions per transaction; an attacker cannot
-inflate these loops past the constants, and the constants are well
-within a single ledger's gas budget. Scout's static analysis does not
-trace the size-gate guard, so it sees a "variable-length" loop.
+`FALCON_SIG_MAX_SIZE = 752` and `FALCON_512_PUBKEY_SIZE = 897`. The
+message copy has no length cap, but it runs through a fixed 1,024-byte
+chunk buffer, so each iteration is bounded and the iteration count is
+proportional to a length the submitting transaction itself pays for
+under the Soroban host's deterministic gas metering. Scout's static
+analysis traces neither the size-gate guards nor the chunking, so it
+sees "variable-length" loops.
 
 We could suppress with `#[allow(...)]` if Scout supported it, but a
 documented note is more transparent for the audit firm.

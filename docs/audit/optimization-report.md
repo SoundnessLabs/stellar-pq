@@ -12,11 +12,11 @@
 | --- | --- |
 | Per-call verification cost (standalone verifier) | **12,986 CPU instructions / 1,225 memory bytes** for a 14-byte message |
 | Per-call cost *before* the bulk host-copy optimization | 396,903 CPU instructions (**30.6× reduction**, see §4.1) |
-| Worst-case verification cost (16,384-byte message) | **15,033 CPU instructions / 1,225 memory bytes** |
-| Share of the per-transaction Soroban CPU budget (100,000,000 insns) | **≈ 0.013 %** (worst case ≈ 0.015 %) |
-| Share of the per-transaction Soroban memory budget (40 MiB) | **≈ 0.003 %** |
-| Deployed contract size (verifier `.wasm`, `stellar contract build`) | **10,660 bytes** |
-| Contract size vs. an un-tuned release build | **−96.7 % (30.7× smaller)**, see §4.2 |
+| Large-message verification cost (message length is uncapped) | **40,840 CPU insns @ 16 KiB, 125,080 @ 64 KiB** — linear, ≈ 1.8 k insns per KiB, paid by the caller |
+| Share of the per-transaction Soroban CPU budget (100,000,000 insns) | **≈ 0.013 %** for short messages; ≈ 0.13 % at 64 KiB |
+| Share of the per-transaction Soroban memory budget (40 MiB) | **≈ 0.003 %** for short messages; ≈ 0.17 % at 64 KiB |
+| Contract size (verifier `.wasm`, `stellar contract build`) | **10,922 bytes** |
+| Contract size vs. an un-tuned release build | **−96.6 % (29.1× smaller)**, see §4.2 |
 | Smart-account deployment cost | **102,290 CPU instructions / 5,805 memory bytes** |
 
 The grant success criterion — *"Gas usage remains within acceptable
@@ -91,19 +91,24 @@ per input collapses the cost by ~30×:
 | Verify, 14-byte (`"Hello, Falcon!"`) | 396,903 | 12,986 | 30.6× |
 | Verify, 100-byte message | 417,887 | 12,997 | 32.2× |
 | Failed verify (wrong message) | 396,903 | 12,986 | 30.6× |
-| Verify, 16,384-byte message (worst case) | — | **15,033** | — |
+| Verify, 16,384-byte message | — | **40,840** | — |
+| Verify, 65,536-byte message | — | **125,080** | — |
 
-(All in CPU instructions; memory is flat at 1,225 bytes in every row.)
+(All in CPU instructions; memory is flat at 1,225 bytes for any message
+that fits one 1,024-byte chunk, then grows with the message: 19,145
+bytes at 16 KiB, 72,905 at 64 KiB.)
 
-Memory is flat — the direct, measurable consequence of the zero-heap
-design (O-4). After O-8 the residual ≈ 13 k instructions is the actual
-Falcon work (signature/pubkey decode + NTT multiply + `hash_to_point` +
-norm check), dominated by the fixed-degree NTT (O-1). It scales only
-weakly with message length: even the largest accepted message (16,384
-bytes) adds just ≈ 2 k instructions over a tiny one, so there is **no
-message-size gas-griefing / DoS vector** (DRS-1/DRS-2). A build-time
-`const` assertion bounds the worst-case verify stack frame
-(`soroban-falcon-verifier/src/lib.rs`).
+For single-chunk messages memory is flat — the direct, measurable
+consequence of the zero-heap design (O-4). After O-8 the residual
+≈ 13 k instructions is the actual Falcon work (signature/pubkey decode +
+NTT multiply + challenge hash + norm check), dominated by the
+fixed-degree NTT (O-1). The message itself has no length cap: it is
+hashed through a fixed 1,024-byte chunk buffer, so the verify stack
+frame stays fixed (enforced by a build-time `const` assertion in
+`soroban-falcon-verifier/src/lib.rs`) while CPU and memory grow linearly
+at ≈ 1.8 k instructions and ≈ 1.2 KB per KiB of message. Soroban meters
+that cost to the submitting transaction, so a large message burdens only
+its own caller — there is **no message-size gas-griefing / DoS vector**.
 
 ### 4.2 Deployment cost — contract `.wasm` size
 
@@ -113,20 +118,23 @@ effect of the size-tuning profile (O-6):
 
 | Build profile | `.wasm` size | vs. tuned |
 | --- | --- | --- |
-| `dev` (unoptimized + debuginfo) | 4,142,157 B (≈ 4.14 MB) | 222.7× larger — **exceeds the contract-size limit; cannot deploy** |
-| `release` defaults (`opt=3`, LTO off, no strip, `codegen-units=16`) | 571,829 B (≈ 558 KB) | 30.7× larger |
-| **`release` tuned** (`opt=z`, fat LTO, `codegen-units=1`, `strip`, `panic=abort`) | **18,603 B (≈ 18.6 KB)** | — |
+| `dev` (unoptimized + debuginfo) | 4,156,838 B (≈ 4.16 MB) | 210.8× larger — **exceeds the contract-size limit; cannot deploy** |
+| `release` defaults (`opt=3`, LTO off, no strip, `codegen-units=16`) | 572,926 B (≈ 559 KB) | 29.1× larger |
+| **`release` tuned** (`opt=z`, fat LTO, `codegen-units=1`, `strip`, `panic=abort`) | **19,720 B (≈ 19.7 KB)** | — |
 
 The honest "optimization-pass" delta is the two release builds:
-**571,829 → 18,603 bytes, a 96.7 % (30.7×) reduction** in on-ledger
+**572,926 → 19,720 bytes, a 96.6 % (29.1×) reduction** in on-ledger
 deployment cost, with no change to source behaviour. The un-tuned dev
 build is included only to show that without the pass the artifact does
 not even fit on-chain.
 
-The artifact actually deployed to testnet is built with
-`stellar contract build` (target `wasm32v1-none`), which is more compact
-still: **10,660 bytes** (wasm hash
-`eb27c1d6aad2b9326ff69d0549f6df4f115dec1663f43baa3050ced27bf22457`).
+Built with `stellar contract build` (target `wasm32v1-none`) the
+artifact is more compact still: **10,922 bytes** (wasm hash
+`8d2a403b31a6fe9c62823461524265defcac00de28bd409f369faed0d93c573d`).
+The testnet deployment referenced above still runs the previous
+10,660-byte build (wasm hash
+`eb27c1d6aad2b9326ff69d0549f6df4f115dec1663f43baa3050ced27bf22457`);
+redeployment with the current limits is pending.
 
 ### 4.3 Smart-account deployment
 
