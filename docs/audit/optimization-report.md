@@ -15,8 +15,8 @@
 | Large-message verification cost (message length is uncapped) | **40,840 CPU insns @ 16 KiB, 125,080 @ 64 KiB** — linear, ≈ 1.8 k insns per KiB, paid by the caller |
 | Share of the per-transaction Soroban CPU budget (100,000,000 insns) | **≈ 0.013 %** for short messages; ≈ 0.13 % at 64 KiB |
 | Share of the per-transaction Soroban memory budget (40 MiB) | **≈ 0.003 %** for short messages; ≈ 0.17 % at 64 KiB |
-| Contract size (verifier `.wasm`, `stellar contract build`) | **10,922 bytes** |
-| Contract size vs. an un-tuned release build | **−96.6 % (29.1× smaller)**, see §4.2 |
+| Contract size (verifier `.wasm`, `stellar contract build`) | **10,764 bytes** (smart account: 16,723) |
+| Contract size vs. an un-tuned release build | **−96.6 % (29.3× smaller)**, see §4.2 |
 | Smart-account deployment cost | **102,290 CPU instructions / 5,805 memory bytes** |
 
 The grant success criterion — *"Gas usage remains within acceptable
@@ -63,11 +63,11 @@ can verify it is actually present in the audited code.
 | # | Optimization | Where | Effect |
 | --- | --- | --- | --- |
 | O-1 | **NTT-based polynomial multiplication** with Montgomery-form arithmetic. The verifier computes `h · s2` in the NTT domain — `O(n log n)` — instead of schoolbook convolution `O(n²)`. For `n = 512` this replaces ≈ 262 k coefficient products with ≈ 4.6 k. | `falcon-512-core/src/ntt.rs` (`montgomery_mul` :109; forward/inverse twiddle tables in Montgomery form :14, :52) | Largest single contributor to the low per-call CPU cost. |
-| O-2 | **Branch-free, division-free field arithmetic.** `field_add`, `field_sub`, `field_halve`, and `montgomery_mul` reduce mod `Q = 12289` using bitmask conditional subtraction (`Q & (0 - (d >> 31))`) — no data-dependent branches and no integer division. | `falcon-512-core/src/ntt.rs:90–114` | Removes hardware UDIV from the hot loop; also constant-time (see `constant-time-analysis.md`). |
-| O-3 | **Bounded rejection-sampling reduction (F-001 fix).** `hash_to_point` reduces each 16-bit SHAKE word with exactly four `field_sub` calls under an `ACCEPT_THRESHOLD = 5·Q`, instead of the naive `w % Q` that LLVM lowered to UDIV at `-Oz`. | `falcon-512-core/src/verify.rs:311–345` | Eliminates the only remaining division on the hot path; see remediation F-001. |
+| O-2 | **Branch-free, division-free field arithmetic.** `field_add`, `field_sub`, and `montgomery_mul` reduce mod `Q = 12289` using bitmask conditional subtraction (`Q & (0 - (d >> 31))`) — no data-dependent branches and no integer division. | `falcon-512-core/src/ntt.rs:90–114` | Removes hardware UDIV from the hot loop; also constant-time (see `constant-time-analysis.md`). |
+| O-3 | **Bounded rejection-sampling reduction (F-001 fix).** `squeeze_challenge` reduces each 16-bit SHAKE word with exactly four `field_sub` calls under an `ACCEPT_THRESHOLD = 5·Q`, instead of the naive `w % Q` that LLVM lowered to UDIV at `-Oz`. | `falcon-512-core/src/verify.rs:311–345` | Eliminates the only remaining division on the hot path; see remediation F-001. |
 | O-4 | **`no_std`, zero-heap design.** The core crate is `#![no_std]` with no allocator; all polynomials are fixed-size stack arrays (`[u16; 512]`, `[i16; 512]`). No `Vec`, no dynamic allocation during verification. | `falcon-512-core/src/lib.rs:1`; array signatures in `verify.rs:146–148`, etc. | Flat, predictable memory cost (1,225 bytes, independent of signature content). |
 | O-5 | **Host `sha256` for auxiliary hashing.** Pubkey commitments in the smart account use the Soroban host `sha256` host-function rather than hashing in-WASM. (The Falcon `hash_to_point` itself is SHAKE256, which the Falcon design requires and which has no Soroban host-function equivalent, so it necessarily runs in-WASM.) | `soroban-falcon-smart-account/src/lib.rs:98, 139` | Moves avoidable hashing onto the cheap metered host path. |
-| O-6 | **Size-tuned release profile.** `opt-level = "z"`, fat `lto`, `codegen-units = 1`, `panic = "abort"`, `strip = "symbols"`, `overflow-checks = true`. | `*/Cargo.toml` `[profile.release]` | Drives the 30.7× contract-size reduction in §4.2. |
+| O-6 | **Size-tuned release profile.** `opt-level = "z"`, fat `lto`, `codegen-units = 1`, `panic = "abort"`, `strip = "symbols"`, `overflow-checks = true`. | `*/Cargo.toml` `[profile.release]` | Drives the 29.3× contract-size reduction in §4.2. |
 | O-7 | **Shared `falcon-512-core` crate.** Both the standalone verifier and the smart account link the same verification core, so crypto code is compiled and audited once rather than duplicated. | `contracts/falcon-512-core` | Avoids duplicate codegen and divergent crypto paths. |
 | O-8 | **Bulk host→guest byte copies.** The contract wrappers extract `public_key` / `signature` / `message` from the Soroban `Bytes` host objects with one `copy_into_slice` each, after a length gate, instead of per-byte `Bytes::get(i)` loops. On Soroban every `get` is a metered host call, so the old loops cost ≈ 1,563 dispatches for the pubkey + signature alone. | `soroban-falcon-verifier/src/lib.rs`; `soroban-falcon-smart-account/src/lib.rs` `__check_auth` | **The single biggest per-call win: 396,903 → 12,986 CPU instructions (30.6×).** See §4.1. |
 
@@ -119,22 +119,26 @@ effect of the size-tuning profile (O-6):
 | Build profile | `.wasm` size | vs. tuned |
 | --- | --- | --- |
 | `dev` (unoptimized + debuginfo) | 4,156,838 B (≈ 4.16 MB) | 210.8× larger — **exceeds the contract-size limit; cannot deploy** |
-| `release` defaults (`opt=3`, LTO off, no strip, `codegen-units=16`) | 572,926 B (≈ 559 KB) | 29.1× larger |
-| **`release` tuned** (`opt=z`, fat LTO, `codegen-units=1`, `strip`, `panic=abort`) | **19,720 B (≈ 19.7 KB)** | — |
+| `release` defaults (`opt=3`, LTO off, no strip, `codegen-units=16`) | 572,926 B (≈ 559 KB) | 29.3× larger |
+| **`release` tuned** (`opt=z`, fat LTO, `codegen-units=1`, `strip`, `panic=abort`) | **19,539 B (≈ 19.5 KB)** | — |
 
 The honest "optimization-pass" delta is the two release builds:
-**572,926 → 19,720 bytes, a 96.6 % (29.1×) reduction** in on-ledger
+**572,926 → 19,539 bytes, a 96.6 % (29.3×) reduction** in on-ledger
 deployment cost, with no change to source behaviour. The un-tuned dev
 build is included only to show that without the pass the artifact does
 not even fit on-chain.
 
 Built with `stellar contract build` (target `wasm32v1-none`) the
-artifact is more compact still: **10,922 bytes** (wasm hash
-`8d2a403b31a6fe9c62823461524265defcac00de28bd409f369faed0d93c573d`).
+artifact is more compact still: **10,764 bytes** (wasm hash
+`795c0d18cc51feee7710505dbb6de17c4bc5c0ae049e5e077fd4abe15dfe8c23`).
+The smart account, which carries the two-step rotation flow, builds to
+**16,723 bytes** (wasm hash
+`4341d79322f3c420ad436116df60d3bee05a213bc604860dec29a47c08209cfb`).
+
 The testnet deployment referenced above still runs the previous
 10,660-byte build (wasm hash
 `eb27c1d6aad2b9326ff69d0549f6df4f115dec1663f43baa3050ced27bf22457`);
-redeployment with the current limits is pending.
+redeployment is pending.
 
 ### 4.3 Smart-account deployment
 
