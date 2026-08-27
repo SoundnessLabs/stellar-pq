@@ -2,6 +2,29 @@
 //!
 //! Twiddle tables and Montgomery constants match the Falcon reference
 //! implementation (PQClean `crypto_sign/falcon-512/clean`).
+//!
+//! # Representation invariants
+//!
+//! The contracts below rely on three distinctions. None of them is
+//! visible in a value's bit pattern, so callers have to track all
+//! three themselves.
+//!
+//! *Canonical range.* A field element of `Z_q` (`Q = 12289`) has many
+//! integer representatives; the canonical one lies in `[0, Q)`. Scalar
+//! helpers pass elements as `u32` and polynomial arrays store them as
+//! `u16`. Unless a function says otherwise, its inputs must be
+//! canonical and its outputs are canonical.
+//!
+//! *Field encoding.* An element `c` is carried either in natural
+//! encoding (`c` itself) or in Montgomery encoding (`c·R mod Q`, with
+//! `R = 2^16 mod Q`). Both use canonical representatives.
+//!
+//! *Polynomial domain.* A `[u16; 512]` array holds either the
+//! coefficients of a polynomial in `Z_q[X]/(X^512 + 1)` or its NTT
+//! (evaluation) image. Evaluation entries sit in the bit-reversed
+//! order of the Falcon reference code; [`ntt_forward`],
+//! [`ntt_inverse`], and [`poly_pointwise_mul`] all agree on that
+//! order, so callers never see it.
 use crate::{FALCON_512_N, Q};
 
 /// Montgomery reduction constant: `-Q^{-1} mod 2^16`.
@@ -87,24 +110,40 @@ pub static IGMB: [u16; 512] = [
     1080, 12039, 8444, 3052, 3813, 11065, 6736, 8454,
 ];
 
+/// Returns `(x + y) mod Q`. `x` and `y` must be canonical and share an
+/// encoding (both natural or both Montgomery); the result is canonical
+/// in that same encoding.
 #[inline(always)]
 pub fn field_add(x: u32, y: u32) -> u32 {
     let d = x.wrapping_add(y).wrapping_sub(Q);
     d.wrapping_add(Q & (0u32.wrapping_sub(d >> 31)))
 }
 
+/// Returns `(x - y) mod Q`. Same contract as [`field_add`]: canonical
+/// inputs in one shared encoding, canonical result in that encoding.
 #[inline(always)]
 pub fn field_sub(x: u32, y: u32) -> u32 {
     let d = x.wrapping_sub(y);
     d.wrapping_add(Q & (0u32.wrapping_sub(d >> 31)))
 }
 
+/// Returns `x · 2^{-1} mod Q`. `x` must be canonical, in either
+/// encoding; the result is canonical in the same encoding.
 #[inline(always)]
 pub fn field_halve(x: u32) -> u32 {
     let x = x.wrapping_add(Q & (0u32.wrapping_sub(x & 1)));
     x >> 1
 }
 
+/// Returns `x · y · 2^{-16} mod Q`, canonical.
+///
+/// Requires `x · y < 2^16 · Q`: the product must not overflow `u32`
+/// and the reduction must stay in bounds. Canonical inputs always
+/// qualify, since `Q^2 < 2^16 · Q`.
+///
+/// A Montgomery-encoded operand cancels the `2^{-16}`: if `y` encodes
+/// `c` in Montgomery form, the result is `x · c mod Q` in `x`'s
+/// encoding.
 #[inline(always)]
 pub fn montgomery_mul(x: u32, y: u32) -> u32 {
     let z = x * y;
@@ -114,6 +153,12 @@ pub fn montgomery_mul(x: u32, y: u32) -> u32 {
     z.wrapping_add(Q & (0u32.wrapping_sub(z >> 31)))
 }
 
+/// In-place forward NTT: coefficient domain to evaluation domain.
+///
+/// Entries of `a` must be canonical and share one encoding. They come
+/// out canonical, still in that encoding, in the evaluation domain;
+/// the [`GMB`] twiddles are in Montgomery form, so the butterfly
+/// multiplies leave the encoding alone.
 pub fn ntt_forward(a: &mut [u16; FALCON_512_N]) {
     let n = FALCON_512_N;
     let mut t = n;
@@ -140,6 +185,12 @@ pub fn ntt_forward(a: &mut [u16; FALCON_512_N]) {
     }
 }
 
+/// In-place inverse NTT: evaluation domain to coefficient domain.
+///
+/// Entries of `a` must be canonical and share one encoding. They come
+/// out canonical, still in that encoding, in the coefficient domain.
+/// The final loop divides by 512; `ni` is `2^{-9}` in Montgomery form,
+/// so that multiply leaves the encoding alone too.
 pub fn ntt_inverse(a: &mut [u16; FALCON_512_N]) {
     let n = FALCON_512_N;
     let logn = 9;
@@ -177,24 +228,45 @@ pub fn ntt_inverse(a: &mut [u16; FALCON_512_N]) {
     }
 }
 
+/// Converts `f` from natural to Montgomery encoding in place. Entries
+/// must be canonical and natural-encoded; they come out canonical and
+/// Montgomery-encoded. The operation is pointwise and leaves the
+/// polynomial domain unchanged.
 pub fn poly_to_montgomery(f: &mut [u16; FALCON_512_N]) {
     for i in 0..FALCON_512_N {
         f[i] = montgomery_mul(f[i] as u32, R2) as u16;
     }
 }
 
+/// Pointwise product in place: `f[i] ← f[i] · g[i] · 2^{-16} mod Q`.
+///
+/// `f` and `g` must be evaluation-domain polynomials with canonical
+/// entries; the result is canonical and stays in the evaluation
+/// domain. The `2^{-16}` makes the output encoding depend on the
+/// inputs: one Montgomery operand yields a natural result, two yield a
+/// Montgomery result, and two natural operands leave a stray `2^{-16}`
+/// (unsupported). The verifier multiplies a natural `f` by the
+/// Montgomery `g` from [`poly_prepare_for_mul`] and gets a natural
+/// result.
 pub fn poly_pointwise_mul(f: &mut [u16; FALCON_512_N], g: &[u16; FALCON_512_N]) {
     for i in 0..FALCON_512_N {
         f[i] = montgomery_mul(f[i] as u32, g[i] as u32) as u16;
     }
 }
 
+/// Pointwise subtraction in place: `f[i] ← (f[i] - g[i]) mod Q`.
+/// `f` and `g` must have canonical entries in the same domain and
+/// encoding; the result is canonical and keeps both.
 pub fn poly_sub(f: &mut [u16; FALCON_512_N], g: &[u16; FALCON_512_N]) {
     for i in 0..FALCON_512_N {
         f[i] = field_sub(f[i] as u32, g[i] as u32) as u16;
     }
 }
 
+/// Prepares one operand for [`poly_pointwise_mul`]: forward NTT, then
+/// conversion to Montgomery encoding. `h` must be a coefficient-domain
+/// polynomial with canonical, natural-encoded entries; it comes out
+/// canonical, Montgomery-encoded, and in the evaluation domain.
 pub fn poly_prepare_for_mul(h: &mut [u16; FALCON_512_N]) {
     ntt_forward(h);
     poly_to_montgomery(h);
