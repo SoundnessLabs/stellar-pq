@@ -288,3 +288,43 @@ fn test_kat_wrong_public_key() {
     let result = FalconVerifier::verify_512(&pk, &msg, &sig);
     assert!(!result, "Verification should fail with wrong public key");
 }
+
+/// The contract hashes the message through a fixed-size chunk buffer.
+/// Verify KAT vectors whose message lengths land just under, just past,
+/// and at several multiples of the chunk size, so the chunked absorption
+/// is exercised at its boundaries.
+#[cfg(feature = "testutils")]
+#[test]
+fn test_contract_chunked_message_boundaries() {
+    use soroban_falcon_verifier::{FalconVerifierContract, FalconVerifierContractClient};
+    use soroban_sdk::{Bytes, Env};
+
+    let kat_content = include_str!("falcon512-KAT.rsp");
+    let vectors = parse_kat_file(kat_content);
+
+    let env = Env::default();
+    let contract_id = env.register(FalconVerifierContract, ());
+    let client = FalconVerifierContractClient::new(&env, &contract_id);
+
+    // mlen = 33·(index+1): 1023 and 1056 straddle the 1024-byte chunk,
+    // 3300 spans four chunks.
+    for (index, expected_mlen) in [(30usize, 1023usize), (31, 1056), (99, 3300)] {
+        let vector = &vectors[index];
+        assert_eq!(vector.mlen.unwrap(), expected_mlen, "vector {index}");
+
+        let pk = Bytes::from_slice(&env, &vector.public_key());
+        let msg_bytes = vector.message();
+        let msg = Bytes::from_slice(&env, &msg_bytes);
+        let sig = Bytes::from_slice(&env, &vector.extract_falcon_signature());
+
+        assert!(client.verify(&pk, &msg, &sig), "vector {index} should verify");
+
+        // The same message with its last byte flipped must fail.
+        let mut wrong = msg_bytes.clone();
+        *wrong.last_mut().unwrap() ^= 1;
+        assert!(
+            !client.verify(&pk, &Bytes::from_slice(&env, &wrong), &sig),
+            "tampered message for vector {index} must fail"
+        );
+    }
+}

@@ -137,7 +137,7 @@ fn test_check_auth_rejects_undersized_signature() {
     let mut pk = [0u8; 897];
     pk.copy_from_slice(&pubkey_bytes[..897]);
 
-    // Signature shorter than FALCON_SIG_MIN_SIZE (42).
+    // Signature shorter than FALCON_SIG_MIN_SIZE.
     let truncated = &sig_bytes[..10];
     assert!(!FalconVerifier::verify_512(&pk, b"Hello, Falcon!", truncated));
 
