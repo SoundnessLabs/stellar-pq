@@ -8,18 +8,23 @@
 use soroban_sdk::{contract, contractimpl, Bytes, Env};
 
 pub use falcon_512_core::verify;
-pub use falcon_512_core::FalconVerifier;
+pub use falcon_512_core::{Falcon512Verification, FalconVerifier};
 pub use falcon_512_core::{
-    FALCON_512_LOGN, FALCON_512_N, FALCON_512_PUBKEY_SIZE, FALCON_MAX_MESSAGE_SIZE,
-    FALCON_SIG_MAX_SIZE, FALCON_SIG_MIN_SIZE, L2_BOUND_512, Q,
+    FALCON_512_LOGN, FALCON_512_N, FALCON_512_PUBKEY_SIZE, FALCON_SIG_MAX_SIZE,
+    FALCON_SIG_MIN_SIZE, L2_BOUND_512, Q,
 };
 
-// DRS-1: bound the worst-case verify() stack frame at build time. verify()
-// stacks a 16 KiB message buffer + 897 B pubkey + 666 B signature buffer;
-// verify_512 then uses several fixed [u16;512]/[i16;512] arrays. Keep the
-// entry buffers well under the wasm32 shadow-stack budget (1 MiB default).
+/// Host->guest copy granularity for the message. The message is hashed
+/// through this buffer, so its length is unbounded while the stack stays
+/// small.
+const MSG_CHUNK_SIZE: usize = 1024;
+
+// Bound the worst-case verify() stack frame at build time: one message
+// chunk, the pubkey, the signature, plus the fixed [u16;512]/[i16;512]
+// arrays inside the core verifier. Keep the entry buffers well under the
+// wasm32 shadow-stack budget (1 MiB default).
 const _: () = assert!(
-    FALCON_MAX_MESSAGE_SIZE + FALCON_512_PUBKEY_SIZE + (FALCON_SIG_MAX_SIZE as usize) <= 64 * 1024
+    MSG_CHUNK_SIZE + FALCON_512_PUBKEY_SIZE + (FALCON_SIG_MAX_SIZE as usize) <= 64 * 1024
 );
 
 #[contract]
@@ -31,13 +36,11 @@ impl FalconVerifierContract {
     ///
     /// # Arguments
     /// * `public_key` - 897-byte Falcon-512 public key
-    /// * `message` - Message that was signed, up to `FALCON_MAX_MESSAGE_SIZE` bytes
+    /// * `message` - Message that was signed, of any length
     /// * `signature` - Falcon signature (compressed or padded format)
     ///
     /// # Returns
     /// * `true` if the signature is valid, `false` otherwise.
-    ///
-    /// Returns `false` for any oversized input rather than silently truncating.
     pub fn verify(_env: Env, public_key: Bytes, message: Bytes, signature: Bytes) -> bool {
         if public_key.len() != FALCON_512_PUBKEY_SIZE as u32 {
             return false;
@@ -46,17 +49,12 @@ impl FalconVerifierContract {
         if sig_len < FALCON_SIG_MIN_SIZE || sig_len > FALCON_SIG_MAX_SIZE {
             return false;
         }
-        let msg_len = message.len();
-        if msg_len > FALCON_MAX_MESSAGE_SIZE as u32 {
-            return false;
-        }
 
-        // Bulk host->guest copies (DRS-3 optimization). The length gates above
-        // guarantee `public_key.len() == 897`, `sig_len in [42,666]`, and
-        // `msg_len <= 16384`, so each destination slice is sized to exactly the
-        // source length; `copy_into_slice` only panics on a length mismatch,
-        // which cannot occur here. One metered host call each, versus up to
-        // ~17.9 KB of individual `get()` dispatches.
+        // Bulk host->guest copies. The length gates above size each
+        // destination slice to exactly its source length, so
+        // `copy_into_slice` (which panics only on a length mismatch)
+        // cannot trap. One metered host call per copy, versus one `get()`
+        // dispatch per byte.
         let mut pk_bytes = [0u8; FALCON_512_PUBKEY_SIZE];
         public_key.copy_into_slice(&mut pk_bytes);
 
@@ -64,15 +62,34 @@ impl FalconVerifierContract {
         let mut sig_bytes = [0u8; FALCON_SIG_MAX_SIZE as usize];
         signature.copy_into_slice(&mut sig_bytes[..sig_len_usize]);
 
-        let msg_len_usize = msg_len as usize;
-        let mut msg_bytes = [0u8; FALCON_MAX_MESSAGE_SIZE];
-        message.copy_into_slice(&mut msg_bytes[..msg_len_usize]);
+        let Some(mut verification) =
+            Falcon512Verification::new(&pk_bytes, &sig_bytes[..sig_len_usize])
+        else {
+            return false;
+        };
 
-        FalconVerifier::verify_512(
-            &pk_bytes,
-            &msg_bytes[..msg_len_usize],
-            &sig_bytes[..sig_len_usize],
-        )
+        // Hash the message through a fixed-size chunk buffer; only the
+        // concatenation of the chunks matters. A message that fits the
+        // buffer is copied with a single host call; a longer one costs one
+        // `slice` + one copy per chunk.
+        let msg_len = message.len();
+        let mut chunk = [0u8; MSG_CHUNK_SIZE];
+        if msg_len <= MSG_CHUNK_SIZE as u32 {
+            message.copy_into_slice(&mut chunk[..msg_len as usize]);
+            verification.absorb_message(&chunk[..msg_len as usize]);
+        } else {
+            let mut offset = 0u32;
+            while offset < msg_len {
+                let n = (msg_len - offset).min(MSG_CHUNK_SIZE as u32);
+                message
+                    .slice(offset..offset + n)
+                    .copy_into_slice(&mut chunk[..n as usize]);
+                verification.absorb_message(&chunk[..n as usize]);
+                offset += n;
+            }
+        }
+
+        verification.finalize()
     }
 }
 
@@ -89,7 +106,7 @@ mod test {
     }
 
     #[test]
-    fn test_oversized_message_rejected() {
+    fn test_large_message_reaches_verification() {
         let env = Env::default();
         let contract_id = env.register(FalconVerifierContract, ());
         let client = FalconVerifierContractClient::new(&env, &contract_id);
@@ -99,9 +116,9 @@ mod test {
         sig[0] = 0x29;
         let signature = Bytes::from_slice(&env, &sig);
 
-        // A message one byte past the cap must be rejected instead of truncated.
-        let mut big_msg = [0u8; FALCON_MAX_MESSAGE_SIZE + 1];
-        big_msg[0] = 0x01;
+        // A 40 KiB message is hashed chunk by chunk; the call must run the
+        // full pipeline without trapping and reject on the signature.
+        let big_msg = [0x01u8; 40 * 1024];
         let message = Bytes::from_slice(&env, &big_msg);
 
         assert!(!client.verify(&pubkey, &message, &signature));

@@ -16,9 +16,9 @@ fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
 
 const FALCON_512_N: usize = 512;
 const FALCON_512_PUBKEY_SIZE: usize = 897;
-const FALCON_SIG_MAX_SIZE: u32 = 666;
-const FALCON_SIG_MIN_SIZE: u32 = 42;
-const FALCON_MAX_MESSAGE_SIZE: usize = 16384;
+const FALCON_SIG_MAX_SIZE: u32 = 752;
+const FALCON_SIG_MIN_SIZE: u32 = 617;
+const MAX_SIG_COEFF: u32 = 5833;
 const Q: u32 = 12289;
 const L2_BOUND_512: u32 = 34034726;
 const Q0I: u32 = 12287;
@@ -136,7 +136,6 @@ impl FalconVerifier {
         if pubkey.len() != FALCON_512_PUBKEY_SIZE { return false; }
         const FALCON_512_LOGN: u8 = 9;
         if pubkey[0] != FALCON_512_LOGN { return false; }
-        if message.len() > FALCON_MAX_MESSAGE_SIZE { return false; }
         let sig_len = signature.len();
         if sig_len < FALCON_SIG_MIN_SIZE as usize || sig_len > FALCON_SIG_MAX_SIZE as usize { return false; }
         let sig_header = signature[0];
@@ -250,7 +249,7 @@ impl FalconVerifier {
                 acc_len -= 1;
                 if ((acc >> acc_len) & 1) != 0 { break; }
                 m += 128;
-                if m > 2047 { return 0; }
+                if m > MAX_SIG_COEFF { return 0; }
             }
             if sign != 0 && m == 0 { return 0; }
             s2[u] = if sign != 0 { -(m as i16) } else { m as i16 };
