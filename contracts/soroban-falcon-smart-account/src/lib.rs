@@ -21,15 +21,36 @@
 //!
 //! ## Instance-storage footprint
 //!
-//! The 897-byte public key sits in instance storage under `F_PUBKEY`.
-//! Soroban caps the whole instance entry at 64 KiB, so the key is ~1.4% of
+//! The 897-byte public key sits in instance storage under `F_PUBKEY`, and
+//! a rotation in flight adds a second one under `F_PENDING`. Soroban caps
+//! the whole instance entry at 64 KiB, so the two together are ~2.7% of
 //! the budget before XDR overhead.
 //!
 //! Worth knowing before adding instance state: it all shares that one
-//! entry, and Falcon keys are big. A pending key for two-step rotation
-//! would double the Falcon material. A write that exceeds the cap fails at
+//! entry, and Falcon keys are big. A write that exceeds the cap fails at
 //! the host and takes the whole call with it, so check the headroom first,
 //! or use persistent storage.
+//!
+//! ## Key rotation (two-step)
+//!
+//! A mistyped or corrupted key must never become the active key, so
+//! rotation takes two steps:
+//!
+//! 1. [`FalconSmartAccount::propose_key`], authorized by the **current**
+//!    key, checks that `new_pubkey` is a well-formed Falcon-512 encoding
+//!    and stores it as pending. The current key stays active.
+//! 2. [`FalconSmartAccount::accept_key`] activates the pending key once it
+//!    receives a Falcon signature made with that key over
+//!    `ACCEPT_DOMAIN_SEPARATOR || SHA-256(pending_pubkey)`. Only the
+//!    holder of the pending private key can sign that, so a wrong key can
+//!    never be activated.
+//!
+//! Until then the current key can replace the proposal (`propose_key`
+//! again) or drop it ([`FalconSmartAccount::cancel_key`]).
+//!
+//! The two domain tags diverge at byte 29 and neither is a prefix of the
+//! other, so accept proofs and transaction signatures are never
+//! interchangeable.
 
 use soroban_sdk::{
     auth::{Context, CustomAccountInterface},
@@ -45,8 +66,11 @@ pub use falcon_512_core::{
     FALCON_SIG_MIN_SIZE, L2_BOUND_512, Q,
 };
 
-/// Storage key for the Falcon public key.
+/// Storage key for the active Falcon public key.
 const FALCON_PUBKEY_KEY: Symbol = symbol_short!("F_PUBKEY");
+
+/// Storage key for the pending public key of an in-flight rotation.
+const FALCON_PENDING_KEY: Symbol = symbol_short!("F_PENDING");
 
 /// Domain-separation tag prepended to the signed payload.
 ///
@@ -71,26 +95,51 @@ const INSTANCE_TTL_EXTEND_TO: u32 = 535_000;
 /// arithmetic on dynamic lengths.
 const SIGNED_MESSAGE_LEN: usize = DOMAIN_SEPARATOR.len() + 32;
 
-// A longer DOMAIN_SEPARATOR should fail the build, not overrun the buffer.
+/// Domain tag for the `accept_key` proof-of-possession message,
+/// `ACCEPT_DOMAIN_SEPARATOR || SHA-256(pending_pubkey)`. Distinct from
+/// [`DOMAIN_SEPARATOR`]; the module docs explain why.
+pub const ACCEPT_DOMAIN_SEPARATOR: &[u8] = b"soroban-falcon-smart-account-accept-v1";
+
+/// Exact length of the accept-proof message:
+/// `ACCEPT_DOMAIN_SEPARATOR.len() + 32` (the SHA-256 of the pending pubkey).
+const ACCEPT_MESSAGE_LEN: usize = ACCEPT_DOMAIN_SEPARATOR.len() + 32;
+
+// A longer domain separator should fail the build, not overrun the buffer.
 const _: () = assert!(SIGNED_MESSAGE_LEN <= SIGNED_MESSAGE_MAX);
+const _: () = assert!(ACCEPT_MESSAGE_LEN <= SIGNED_MESSAGE_MAX);
 
 /// Emitted at deploy with SHA-256 of the pubkey. The hash rather than the
 /// 897 bytes keeps ledger metadata small; `get_pubkey` has the full key.
 ///
-/// Topics and data match what this contract emitted before the
-/// `#[contractevent]` migration. Indexers key on that shape, so changing
-/// it breaks them.
+/// Every event here carries the pubkey hash and nothing else; indexers key
+/// on the topic pair to tell the stages of a rotation apart.
 #[contractevent(topics = ["falcon", "init"], data_format = "single-value")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FalconInit {
     pub pubkey_hash: BytesN<32>,
 }
 
-/// Emitted by `rotate_key` with SHA-256 of the new pubkey. Same shape rule
-/// as [`FalconInit`].
-#[contractevent(topics = ["falcon", "rotate"], data_format = "single-value")]
+/// Emitted by `propose_key` with SHA-256 of the proposed pubkey. The key is
+/// not active yet.
+#[contractevent(topics = ["falcon", "propose"], data_format = "single-value")]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FalconRotate {
+pub struct FalconPropose {
+    pub pubkey_hash: BytesN<32>,
+}
+
+/// Emitted by `accept_key` with SHA-256 of the pubkey that just became
+/// active. This is the event that marks a completed rotation.
+#[contractevent(topics = ["falcon", "accept"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FalconAccept {
+    pub pubkey_hash: BytesN<32>,
+}
+
+/// Emitted by `cancel_key` with SHA-256 of the dropped proposal. The active
+/// key is unchanged.
+#[contractevent(topics = ["falcon", "cancel"], data_format = "single-value")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FalconCancel {
     pub pubkey_hash: BytesN<32>,
 }
 
@@ -102,17 +151,49 @@ pub enum Error {
     InvalidSignatureSize = 2,
     VerificationFailed = 3,
     PublicKeyMissing = 4,
+    /// The pubkey has the right length but is not a well-formed Falcon-512
+    /// encoding (bad header byte, coefficient >= Q, or nonzero residual bits).
+    MalformedPublicKey = 5,
+    /// `accept_key` / `cancel_key` / `get_pending_key` called with no
+    /// rotation proposal pending.
+    NoPendingKey = 6,
+    /// The `accept_key` proof did not verify under the pending public key.
+    ProofVerificationFailed = 7,
 }
 
 #[contract]
 pub struct FalconSmartAccount;
 
+/// Well-formedness gate shared by `__constructor` and `propose_key`:
+/// `InvalidPublicKeySize` unless exactly 897 bytes, `MalformedPublicKey`
+/// unless it decodes (header `0x09`, all coefficients `< Q`, zero
+/// residual bits). A key that fails here could never verify a signature;
+/// storing it would brick the account.
+fn check_pubkey_well_formed(pubkey: &Bytes) -> Result<(), Error> {
+    if pubkey.len() != FALCON_512_PUBKEY_SIZE as u32 {
+        return Err(Error::InvalidPublicKeySize);
+    }
+    let mut pk_bytes = [0u8; FALCON_512_PUBKEY_SIZE];
+    pubkey.copy_into_slice(&mut pk_bytes);
+    let mut h = [0u16; FALCON_512_N];
+    if !FalconVerifier::decode_pubkey(&pk_bytes, &mut h) {
+        return Err(Error::MalformedPublicKey);
+    }
+    Ok(())
+}
+
 #[contractimpl]
 impl FalconSmartAccount {
     /// Initializes the smart account with a Falcon-512 public key at deploy.
+    /// The key must be a well-formed Falcon-512 encoding, not just 897
+    /// bytes long.
     pub fn __constructor(env: Env, falcon_pubkey: Bytes) {
-        if falcon_pubkey.len() != FALCON_512_PUBKEY_SIZE as u32 {
-            panic!("Invalid public key size: expected 897 bytes");
+        match check_pubkey_well_formed(&falcon_pubkey) {
+            Err(Error::InvalidPublicKeySize) => {
+                panic!("Invalid public key size: expected 897 bytes")
+            }
+            Err(_) => panic!("Malformed public key: not a well-formed Falcon-512 encoding"),
+            Ok(()) => (),
         }
         let storage = env.storage().instance();
         storage.set(&FALCON_PUBKEY_KEY, &falcon_pubkey);
@@ -137,23 +218,109 @@ impl FalconSmartAccount {
             .ok_or(Error::PublicKeyMissing)
     }
 
-    /// Rotate the Falcon public key.
+    /// Get the pending (proposed) Falcon public key, if a rotation is in
+    /// flight. Returns `Err(Error::NoPendingKey)` otherwise.
+    pub fn get_pending_key(env: Env) -> Result<Bytes, Error> {
+        env.storage()
+            .instance()
+            .get(&FALCON_PENDING_KEY)
+            .ok_or(Error::NoPendingKey)
+    }
+
+    /// Step 1 of key rotation: propose a new Falcon public key.
     ///
-    /// The account authorizes this itself, which Soroban routes back through
-    /// [`__check_auth`], so rotation needs a signature from the current
-    /// key. Everything after is signed with `new_pubkey`.
-    pub fn rotate_key(env: Env, new_pubkey: Bytes) -> Result<(), Error> {
+    /// Must be authorized by the account itself, i.e. signed by the
+    /// **current** key via [`CustomAccountInterface::__check_auth`].
+    /// `new_pubkey` must be well-formed; it is stored as pending and the
+    /// current key stays active until [`Self::accept_key`]. Proposing
+    /// again replaces any earlier proposal.
+    pub fn propose_key(env: Env, new_pubkey: Bytes) -> Result<(), Error> {
         // Authorize before validating, or an unauthenticated caller can
-        // probe pubkey-size handling and burn host cost without a nonce.
+        // probe pubkey handling and burn host cost without a nonce.
         env.current_contract_address().require_auth();
-        if new_pubkey.len() != FALCON_512_PUBKEY_SIZE as u32 {
-            return Err(Error::InvalidPublicKeySize);
-        }
+        check_pubkey_well_formed(&new_pubkey)?;
         let storage = env.storage().instance();
-        storage.set(&FALCON_PUBKEY_KEY, &new_pubkey);
+        storage.set(&FALCON_PENDING_KEY, &new_pubkey);
         storage.extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
         let pubkey_hash = env.crypto().sha256(&new_pubkey);
-        FalconRotate {
+        FalconPropose {
+            pubkey_hash: pubkey_hash.to_bytes(),
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Step 2 of key rotation: activate the pending key by proving
+    /// possession of its private key.
+    ///
+    /// `proof` must be a Falcon-512 signature made with the **pending**
+    /// key over `ACCEPT_DOMAIN_SEPARATOR || SHA-256(pending_pubkey)`.
+    /// That signature is the authorization for this call; there is no
+    /// `require_auth`. On success the pending key becomes active and the
+    /// proposal slot is cleared.
+    pub fn accept_key(env: Env, proof: Bytes) -> Result<(), Error> {
+        let storage = env.storage().instance();
+        let pending: Bytes = storage
+            .get(&FALCON_PENDING_KEY)
+            .ok_or(Error::NoPendingKey)?;
+
+        // `propose_key` validated well-formedness; re-check the length so
+        // the bulk copy below can never trap (mirrors __check_auth).
+        if pending.len() != FALCON_512_PUBKEY_SIZE as u32 {
+            return Err(Error::InvalidPublicKeySize);
+        }
+        let sig_len = proof.len();
+        if sig_len < FALCON_SIG_MIN_SIZE || sig_len > FALCON_SIG_MAX_SIZE {
+            return Err(Error::InvalidSignatureSize);
+        }
+
+        let mut pk_bytes = [0u8; FALCON_512_PUBKEY_SIZE];
+        pending.copy_into_slice(&mut pk_bytes);
+        let sig_len_usize = sig_len as usize;
+        let mut sig_bytes = [0u8; FALCON_SIG_MAX_SIZE as usize];
+        proof.copy_into_slice(&mut sig_bytes[..sig_len_usize]);
+
+        // Build ACCEPT_DOMAIN_SEPARATOR || SHA-256(pending_pubkey); the
+        // static assert above guarantees it fits in SIGNED_MESSAGE_MAX.
+        let pubkey_hash = env.crypto().sha256(&pending);
+        let mut accept_msg = [0u8; SIGNED_MESSAGE_MAX];
+        accept_msg[..ACCEPT_DOMAIN_SEPARATOR.len()].copy_from_slice(ACCEPT_DOMAIN_SEPARATOR);
+        accept_msg[ACCEPT_DOMAIN_SEPARATOR.len()..ACCEPT_MESSAGE_LEN]
+            .copy_from_slice(&pubkey_hash.to_array());
+
+        let ok = FalconVerifier::verify_512(
+            &pk_bytes,
+            &accept_msg[..ACCEPT_MESSAGE_LEN],
+            &sig_bytes[..sig_len_usize],
+        );
+        if !ok {
+            return Err(Error::ProofVerificationFailed);
+        }
+
+        storage.set(&FALCON_PUBKEY_KEY, &pending);
+        storage.remove(&FALCON_PENDING_KEY);
+        storage.extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+        FalconAccept {
+            pubkey_hash: pubkey_hash.to_bytes(),
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Cancel a pending key rotation.
+    ///
+    /// Authorized by the account itself (i.e. the **current** key). Clears
+    /// the pending proposal; the active key is untouched.
+    pub fn cancel_key(env: Env) -> Result<(), Error> {
+        // Authorize first, then touch state.
+        env.current_contract_address().require_auth();
+        let storage = env.storage().instance();
+        let pending: Bytes = storage
+            .get(&FALCON_PENDING_KEY)
+            .ok_or(Error::NoPendingKey)?;
+        storage.remove(&FALCON_PENDING_KEY);
+        let pubkey_hash = env.crypto().sha256(&pending);
+        FalconCancel {
             pubkey_hash: pubkey_hash.to_bytes(),
         }
         .publish(&env);
