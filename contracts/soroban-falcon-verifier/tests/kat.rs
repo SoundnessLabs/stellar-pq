@@ -262,10 +262,10 @@ fn test_arbitrary_padding_rejected() {
     );
 }
 
-/// Header-malleability regression: 0x29 is the nonce-less
-/// header of the NIST crypto_sign envelope, not a valid detached header.
-/// Flipping the first byte of a valid 0x39 signature to 0x29 (or any other
-/// value) must invalidate it — one signature, one accepted encoding.
+/// 0x29 is the nonce-less header of the NIST crypto_sign envelope, not a
+/// valid detached header. Flipping the first byte of a valid 0x39 signature
+/// to 0x29 (or any other value) must invalidate it: one signature, one
+/// accepted encoding.
 #[test]
 fn test_envelope_header_0x29_rejected() {
     let kat_content = include_str!("falcon512-KAT.rsp");

@@ -13,8 +13,8 @@
  *      `SorobanAuthorization` preimage, prepends DOMAIN_SEPARATOR, and
  *      Falcon-signs the result.
  *   5. Submits the Falcon-signed transaction. Confirms success.
- *   6. Writes a receipt JSON under `runs/run-<timestamp>.json` with all
- *      tx hashes, contract IDs, and explorer URLs the auditor needs.
+ *   6. Writes a receipt JSON under `runs/run-<timestamp>.json` with the
+ *      tx hashes, contract IDs, and explorer URLs needed to check the run.
  *
  * Run:
  *     cd e2e
@@ -23,9 +23,8 @@
  *     bun run start              # full flow
  *     bun run deploy-only        # stop after deploy + fund
  *
- * The script is intentionally readable top-to-bottom rather than
- * library-style. Audit reviewers should be able to follow the flow
- * without jumping between files.
+ * The script reads top-to-bottom rather than library-style, so the flow
+ * can be followed without jumping between files.
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
@@ -232,8 +231,8 @@ function fundSmartAccount(smartAccountId: string, amountXlm: number): string {
 
   // `stellar contract invoke` does not emit the tx hash on stdout in
   // every version; we capture it from the RPC by polling the recent
-  // ledger. For receipt purposes the precise hash isn't critical here
-  // (the deploy + transfer hashes carry the audit signal). Return the
+  // ledger. For the receipt the precise hash isn't critical here (the
+  // deploy and transfer hashes are the ones that matter). Return the
   // stdout for evidence.
   return out || '(invoke succeeded — see RPC for tx hash)'
 }

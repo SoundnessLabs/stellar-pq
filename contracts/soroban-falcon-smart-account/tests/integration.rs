@@ -54,7 +54,7 @@ fn test_smart_account_constructor() {
     let smart_account_id = env.register(FalconSmartAccount, (&pubkey,));
     let client = FalconSmartAccountClient::new(&env, &smart_account_id);
 
-    // Verify stored value (get_pubkey now returns Result; client unwraps for ergonomics).
+    // The client unwraps get_pubkey's Result.
     assert_eq!(client.get_pubkey(), pubkey);
 }
 

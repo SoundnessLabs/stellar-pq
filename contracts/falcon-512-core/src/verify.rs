@@ -207,7 +207,7 @@ impl Falcon512Verification {
                 // accept threshold guarantees w < 5*Q. A `while v >= Q`
                 // loop is off limits: LLVM rewrites it as `w % Q` and
                 // lowers that to hardware UDIV at -Oz/-Os, which is not
-                // constant time (see docs/audit/constant-time-analysis.md).
+                // constant time.
                 let mut v = w;
                 v = field_sub(v, Q);
                 v = field_sub(v, Q);
