@@ -1,6 +1,6 @@
 # Falcon-512 Verifier for Soroban
 
-> **WARNING: This code has not been audited. Use at your own risk. Do not use in production with real funds until a professional security audit has been completed.**
+> **Audited by Veridise** (report V2, 2026-09-10; all findings fixed in this code; see [`docs/audit/`](../../docs/audit/README.md)). The verifier instances already deployed on testnet and mainnet predate the fixes. An audit is not a guarantee: use at your own risk.
 
 A pure-Rust implementation of Falcon-512 post-quantum signature verification for [Soroban](https://soroban.stellar.org/) smart contracts.
 
@@ -196,7 +196,7 @@ pub fn verify_signature(env: &Env, pubkey: &[u8], message: &[u8], sig: &[u8]) ->
 
 ## Security
 
-**This code has not been audited.** Use at your own risk in production environments.
+Veridise audited this contract and the `falcon-512-core` verifier it wraps (report V2, 2026-09-10). All five findings are fixed in this code; the report, the per-finding write-ups, and the remediation log are in [`docs/audit/`](../../docs/audit/README.md). The verifier instances already deployed on testnet and mainnet predate the fixes. An audit is not a guarantee: use at your own risk in production environments.
 
 ## License
 

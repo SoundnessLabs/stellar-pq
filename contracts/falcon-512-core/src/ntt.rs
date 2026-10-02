@@ -1,8 +1,33 @@
-//! Number Theoretic Transform (NTT) for Falcon-512 Verification.
+//! Number-theoretic transform (NTT) for Falcon-512 verification.
 //!
-//! Twiddle tables and Montgomery constants match the Falcon reference
-//! implementation (PQClean `crypto_sign/falcon-512/clean`).
-use crate::{FALCON_512_N, Q};
+//! The twiddle tables and Montgomery constants are taken from the Falcon
+//! reference implementation, PQClean `crypto_sign/falcon-512/clean`.
+//!
+//! Internal to `verify.rs`. Nothing here validates its input.
+//!
+//! # Representation invariants
+//!
+//! The contracts below rely on three distinctions. None of them is
+//! visible in a value's bit pattern, so callers have to track all
+//! three themselves.
+//!
+//! *Canonical range.* A field element of `Z_q` (`Q = 12289`) has many
+//! integer representatives; the canonical one lies in `[0, Q)`. Scalar
+//! helpers pass elements as `u32` and polynomial arrays store them as
+//! `u16`. Unless a function says otherwise, its inputs must be
+//! canonical and its outputs are canonical.
+//!
+//! *Field encoding.* An element `c` is carried either in natural
+//! encoding (`c` itself) or in Montgomery encoding (`c·R mod Q`, with
+//! `R = 2^16 mod Q`). Both use canonical representatives.
+//!
+//! *Polynomial domain.* A `[u16; 512]` array holds either the
+//! coefficients of a polynomial in `Z_q[X]/(X^512 + 1)` or its NTT
+//! (evaluation) image. Evaluation entries sit in the bit-reversed
+//! order of the Falcon reference code; [`ntt_forward`],
+//! [`ntt_inverse`], and [`poly_pointwise_mul`] all agree on that
+//! order, so callers never see it.
+use crate::{FALCON_512_LOGN, FALCON_512_N, FALCON_512_NI, Q};
 
 /// Montgomery reduction constant: `-Q^{-1} mod 2^16`.
 const Q0I: u32 = 12287;
@@ -11,8 +36,19 @@ const R: u32 = 4091;
 /// `2^32 mod Q`, used to convert from natural form to Montgomery form.
 const R2: u32 = 10952;
 
-/// Forward NTT twiddle factors in Montgomery form.
-pub static GMB: [u16; 512] = [
+// NI * N must equal R in the field, or the final scaling is wrong.
+const _: () = assert!((FALCON_512_NI << FALCON_512_LOGN) % Q == R);
+
+/// Primitive 2N-th (1024th) root of unity mod `Q`, the value the twiddle
+/// tables are generated from: `PHI^1024 = 1` and `PHI^512 != 1`, which is
+/// what makes `X^512 + 1` split completely.
+#[cfg(test)]
+const PHI: u32 = 49;
+
+/// Forward NTT twiddle factors in Montgomery form:
+/// `GMB[i] = R · PHI^brv9(i) mod Q`, where `brv9` reverses the low 9 bits
+/// of the index. `tests::gmb_matches_definition` regenerates every entry.
+static GMB: [u16; 512] = [
     4091, 7888, 11060, 11208, 6960, 4342, 6275, 9759, 1591, 6399, 9477, 5266, 586, 5825, 7538,
     9710, 1134, 6407, 1711, 965, 7099, 7674, 3743, 6442, 10414, 8100, 1885, 1688, 1364, 10329,
     10164, 9180, 12210, 6240, 997, 117, 4783, 4407, 1549, 7072, 2829, 6458, 4431, 8877, 7144, 2564,
@@ -49,8 +85,10 @@ pub static GMB: [u16; 512] = [
     841, 3890, 10231, 7248, 8505, 11196, 6688,
 ];
 
-/// Inverse NTT twiddle factors in Montgomery form.
-pub static IGMB: [u16; 512] = [
+/// Inverse NTT twiddle factors in Montgomery form:
+/// `IGMB[i] = R · PHI^-brv9(i) mod Q`, the pointwise inverse of [`GMB`].
+/// `tests::igmb_matches_definition` regenerates every entry.
+static IGMB: [u16; 512] = [
     4091, 4401, 1081, 1229, 2530, 6014, 7947, 5329, 2579, 4751, 6464, 11703, 7023, 2812, 5890,
     10698, 3109, 2125, 1960, 10925, 10601, 10404, 4189, 1875, 5847, 8546, 4615, 5190, 11324, 10578,
     5882, 11155, 8417, 12275, 10599, 7446, 5719, 3569, 5981, 10108, 4426, 8306, 10755, 4679, 11052,
@@ -87,26 +125,34 @@ pub static IGMB: [u16; 512] = [
     1080, 12039, 8444, 3052, 3813, 11065, 6736, 8454,
 ];
 
+/// Returns `(x + y) mod Q`. `x` and `y` must be canonical and share an
+/// encoding (both natural or both Montgomery); the result is canonical
+/// in that same encoding.
 #[inline(always)]
-pub fn field_add(x: u32, y: u32) -> u32 {
+fn field_add(x: u32, y: u32) -> u32 {
     let d = x.wrapping_add(y).wrapping_sub(Q);
     d.wrapping_add(Q & (0u32.wrapping_sub(d >> 31)))
 }
 
+/// Returns `(x - y) mod Q`. Same contract as [`field_add`]: canonical
+/// inputs in one shared encoding, canonical result in that encoding.
 #[inline(always)]
-pub fn field_sub(x: u32, y: u32) -> u32 {
+pub(crate) fn field_sub(x: u32, y: u32) -> u32 {
     let d = x.wrapping_sub(y);
     d.wrapping_add(Q & (0u32.wrapping_sub(d >> 31)))
 }
 
+/// Returns `x · y · 2^{-16} mod Q`, canonical.
+///
+/// Requires `x · y < 2^16 · Q`: the product must not overflow `u32`
+/// and the reduction must stay in bounds. Canonical inputs always
+/// qualify, since `Q^2 < 2^16 · Q`.
+///
+/// A Montgomery-encoded operand cancels the `2^{-16}`: if `y` encodes
+/// `c` in Montgomery form, the result is `x · c mod Q` in `x`'s
+/// encoding.
 #[inline(always)]
-pub fn field_halve(x: u32) -> u32 {
-    let x = x.wrapping_add(Q & (0u32.wrapping_sub(x & 1)));
-    x >> 1
-}
-
-#[inline(always)]
-pub fn montgomery_mul(x: u32, y: u32) -> u32 {
+fn montgomery_mul(x: u32, y: u32) -> u32 {
     let z = x * y;
     let w = ((z.wrapping_mul(Q0I)) & 0xFFFF).wrapping_mul(Q);
     let z = (z + w) >> 16;
@@ -114,7 +160,13 @@ pub fn montgomery_mul(x: u32, y: u32) -> u32 {
     z.wrapping_add(Q & (0u32.wrapping_sub(z >> 31)))
 }
 
-pub fn ntt_forward(a: &mut [u16; FALCON_512_N]) {
+/// In-place forward NTT: coefficient domain to evaluation domain.
+///
+/// Entries of `a` must be canonical and share one encoding. They come
+/// out canonical, still in that encoding, in the evaluation domain;
+/// the [`GMB`] twiddles are in Montgomery form, so the butterfly
+/// multiplies leave the encoding alone.
+pub(crate) fn ntt_forward(a: &mut [u16; FALCON_512_N]) {
     let n = FALCON_512_N;
     let mut t = n;
     let mut m = 1;
@@ -140,9 +192,14 @@ pub fn ntt_forward(a: &mut [u16; FALCON_512_N]) {
     }
 }
 
-pub fn ntt_inverse(a: &mut [u16; FALCON_512_N]) {
+/// In-place inverse NTT: evaluation domain to coefficient domain.
+///
+/// Entries of `a` must be canonical and share one encoding. They come
+/// out canonical, still in that encoding, in the coefficient domain.
+/// The final loop divides by 512; [`FALCON_512_NI`] is `2^{-9}` in
+/// Montgomery form, so that multiply leaves the encoding alone too.
+pub(crate) fn ntt_inverse(a: &mut [u16; FALCON_512_N]) {
     let n = FALCON_512_N;
-    let logn = 9;
     let mut t = 1;
     let mut m = n;
 
@@ -168,34 +225,268 @@ pub fn ntt_inverse(a: &mut [u16; FALCON_512_N]) {
         m = hm;
     }
 
-    let mut ni = R;
-    for _ in 0..logn {
-        ni = field_halve(ni);
-    }
+    // Final scaling by N⁻¹. The reference halves R nine times to get here;
+    // for n = 512 that is always 128.
     for i in 0..n {
-        a[i] = montgomery_mul(a[i] as u32, ni) as u16;
+        a[i] = montgomery_mul(a[i] as u32, FALCON_512_NI) as u16;
     }
 }
 
-pub fn poly_to_montgomery(f: &mut [u16; FALCON_512_N]) {
+/// Converts `f` from natural to Montgomery encoding in place. Entries
+/// must be canonical and natural-encoded; they come out canonical and
+/// Montgomery-encoded. The operation is pointwise and leaves the
+/// polynomial domain unchanged.
+fn poly_to_montgomery(f: &mut [u16; FALCON_512_N]) {
     for i in 0..FALCON_512_N {
         f[i] = montgomery_mul(f[i] as u32, R2) as u16;
     }
 }
 
-pub fn poly_pointwise_mul(f: &mut [u16; FALCON_512_N], g: &[u16; FALCON_512_N]) {
+/// Pointwise product in place: `f[i] ← f[i] · g[i] · 2^{-16} mod Q`.
+///
+/// `f` and `g` must be evaluation-domain polynomials with canonical
+/// entries; the result is canonical and stays in the evaluation
+/// domain. The `2^{-16}` makes the output encoding depend on the
+/// inputs: one Montgomery operand yields a natural result, two yield a
+/// Montgomery result, and two natural operands leave a stray `2^{-16}`
+/// (unsupported). The verifier multiplies a natural `f` by the
+/// Montgomery `g` from [`poly_prepare_for_mul`] and gets a natural
+/// result.
+pub(crate) fn poly_pointwise_mul(f: &mut [u16; FALCON_512_N], g: &[u16; FALCON_512_N]) {
     for i in 0..FALCON_512_N {
         f[i] = montgomery_mul(f[i] as u32, g[i] as u32) as u16;
     }
 }
 
-pub fn poly_sub(f: &mut [u16; FALCON_512_N], g: &[u16; FALCON_512_N]) {
+/// Pointwise subtraction in place: `f[i] ← (f[i] - g[i]) mod Q`.
+/// `f` and `g` must have canonical entries in the same domain and
+/// encoding; the result is canonical and keeps both.
+pub(crate) fn poly_sub(f: &mut [u16; FALCON_512_N], g: &[u16; FALCON_512_N]) {
     for i in 0..FALCON_512_N {
         f[i] = field_sub(f[i] as u32, g[i] as u32) as u16;
     }
 }
 
-pub fn poly_prepare_for_mul(h: &mut [u16; FALCON_512_N]) {
+/// Prepares one operand for [`poly_pointwise_mul`]: forward NTT, then
+/// conversion to Montgomery encoding. `h` must be a coefficient-domain
+/// polynomial with canonical, natural-encoded entries; it comes out
+/// canonical, Montgomery-encoded, and in the evaluation domain.
+pub(crate) fn poly_prepare_for_mul(h: &mut [u16; FALCON_512_N]) {
     ntt_forward(h);
     poly_to_montgomery(h);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `x^e mod Q`, by square-and-multiply on u64. Independent of anything
+    /// in this module, so the tables and Montgomery helpers are checked
+    /// against plain modular arithmetic rather than against themselves.
+    fn pow_mod(x: u32, e: u32) -> u32 {
+        let (mut acc, mut base, mut e) = (1u64, x as u64 % Q as u64, e);
+        while e > 0 {
+            if e & 1 == 1 {
+                acc = acc * base % Q as u64;
+            }
+            base = base * base % Q as u64;
+            e >>= 1;
+        }
+        acc as u32
+    }
+
+    fn inv_mod(x: u32) -> u32 {
+        pow_mod(x, Q - 2)
+    }
+
+    /// Reverses the low 9 bits of `i`, the index permutation the twiddle
+    /// tables are stored in.
+    fn brv9(i: u32) -> u32 {
+        (0..9).fold(0, |acc, b| acc | (((i >> b) & 1) << (8 - b)))
+    }
+
+    #[test]
+    fn phi_is_a_primitive_2n_root() {
+        assert_eq!(pow_mod(PHI, 2 * FALCON_512_N as u32), 1);
+        assert_ne!(pow_mod(PHI, FALCON_512_N as u32), 1);
+    }
+
+    #[test]
+    fn montgomery_constants_match_definitions() {
+        assert_eq!(R, (1u64 << 16) as u32 % Q, "R = 2^16 mod Q");
+        assert_eq!(R2, ((1u64 << 32) % Q as u64) as u32, "R2 = 2^32 mod Q");
+        // Q0I = -Q^-1 mod 2^16
+        assert_eq!(Q0I.wrapping_mul(Q) & 0xFFFF, (1u32 << 16).wrapping_sub(1) & 0xFFFF);
+        // NI = R/N mod Q, the inverse NTT's final scaling.
+        assert_eq!(
+            FALCON_512_NI as u64 * FALCON_512_N as u64 % Q as u64,
+            R as u64
+        );
+    }
+
+    #[test]
+    fn gmb_matches_definition() {
+        for (i, &got) in GMB.iter().enumerate() {
+            let want = (R as u64 * pow_mod(PHI, brv9(i as u32)) as u64 % Q as u64) as u16;
+            assert_eq!(got, want, "GMB[{i}]");
+        }
+    }
+
+    #[test]
+    fn igmb_matches_definition() {
+        let phi_inv = inv_mod(PHI);
+        for (i, &got) in IGMB.iter().enumerate() {
+            let want = (R as u64 * pow_mod(phi_inv, brv9(i as u32)) as u64 % Q as u64) as u16;
+            assert_eq!(got, want, "IGMB[{i}]");
+        }
+    }
+
+    #[test]
+    fn field_add_exhaustive() {
+        for x in 0..Q {
+            for y in 0..Q {
+                assert_eq!(field_add(x, y), (x + y) % Q, "field_add({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn field_sub_exhaustive() {
+        for x in 0..Q {
+            for y in 0..Q {
+                assert_eq!(field_sub(x, y), (x + Q - y) % Q, "field_sub({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn montgomery_mul_exhaustive() {
+        let r_inv = inv_mod(R) as u64;
+        for x in 0..Q {
+            for y in 0..Q {
+                let want = (x as u64 * y as u64 % Q as u64 * r_inv % Q as u64) as u32;
+                assert_eq!(montgomery_mul(x, y), want, "montgomery_mul({x}, {y})");
+            }
+        }
+    }
+
+    /// Every field helper must return a canonical representative for every
+    /// canonical input, not merely a congruent one.
+    #[test]
+    fn field_ops_return_canonical() {
+        for x in [0, 1, 2, Q / 2, Q - 2, Q - 1] {
+            for y in [0, 1, 2, Q / 2, Q - 2, Q - 1] {
+                assert!(field_add(x, y) < Q);
+                assert!(field_sub(x, y) < Q);
+                assert!(montgomery_mul(x, y) < Q);
+            }
+        }
+    }
+
+    /// Deterministic pseudo-random canonical polynomial; no rand dependency.
+    fn sample_poly(seed: u32) -> [u16; FALCON_512_N] {
+        let mut s = seed | 1;
+        let mut p = [0u16; FALCON_512_N];
+        for c in p.iter_mut() {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *c = ((s >> 8) % Q) as u16;
+        }
+        p
+    }
+
+    fn is_canonical(p: &[u16; FALCON_512_N]) -> bool {
+        p.iter().all(|&c| (c as u32) < Q)
+    }
+
+    #[test]
+    fn ntt_round_trip_is_identity() {
+        for seed in [1u32, 7, 12345, 0xDEAD_BEEF] {
+            let original = sample_poly(seed);
+            let mut a = original;
+            ntt_forward(&mut a);
+            assert!(is_canonical(&a), "forward NTT left a non-canonical entry");
+            ntt_inverse(&mut a);
+            assert!(is_canonical(&a), "inverse NTT left a non-canonical entry");
+            assert_eq!(a, original, "seed {seed}: inverse(forward(a)) != a");
+        }
+    }
+
+    #[test]
+    fn poly_to_montgomery_round_trips() {
+        let original = sample_poly(99);
+        let mut a = original;
+        poly_to_montgomery(&mut a);
+        assert!(is_canonical(&a));
+        // montgomery_mul(x, 1) strips one factor of R, undoing the encoding.
+        for (enc, &orig) in a.iter_mut().zip(original.iter()) {
+            let dec = montgomery_mul(*enc as u32, 1) as u16;
+            assert_eq!(dec, orig);
+        }
+    }
+
+    /// Schoolbook negacyclic multiplication in `Z_q[X]/(X^n + 1)`, written
+    /// independently of the NTT path it is checking.
+    fn schoolbook_negacyclic(
+        f: &[u16; FALCON_512_N],
+        g: &[u16; FALCON_512_N],
+    ) -> [u16; FALCON_512_N] {
+        let mut out = [0i64; FALCON_512_N];
+        for (i, &fi) in f.iter().enumerate() {
+            for (j, &gj) in g.iter().enumerate() {
+                let prod = fi as i64 * gj as i64;
+                let k = i + j;
+                // X^n = -1, so a product landing past degree n wraps with a
+                // sign flip.
+                if k < FALCON_512_N {
+                    out[k] += prod;
+                } else {
+                    out[k - FALCON_512_N] -= prod;
+                }
+            }
+        }
+        let mut res = [0u16; FALCON_512_N];
+        for (r, &o) in res.iter_mut().zip(out.iter()) {
+            *r = o.rem_euclid(Q as i64) as u16;
+        }
+        res
+    }
+
+    #[test]
+    fn ntt_multiplication_matches_schoolbook() {
+        for (sf, sg) in [(3u32, 5u32), (2026, 811), (0x5EED, 0xF00D)] {
+            let f = sample_poly(sf);
+            let g = sample_poly(sg);
+
+            // The verifier's path: one operand through poly_prepare_for_mul
+            // (NTT + Montgomery), the other through a plain forward NTT.
+            let mut lhs = f;
+            let mut rhs = g;
+            poly_prepare_for_mul(&mut rhs);
+            assert!(is_canonical(&rhs));
+            ntt_forward(&mut lhs);
+            poly_pointwise_mul(&mut lhs, &rhs);
+            assert!(is_canonical(&lhs));
+            ntt_inverse(&mut lhs);
+            assert!(is_canonical(&lhs));
+
+            assert_eq!(
+                lhs,
+                schoolbook_negacyclic(&f, &g),
+                "NTT product disagrees with schoolbook for seeds {sf}/{sg}"
+            );
+        }
+    }
+
+    #[test]
+    fn poly_sub_matches_coefficientwise() {
+        let f = sample_poly(11);
+        let g = sample_poly(22);
+        let mut got = f;
+        poly_sub(&mut got, &g);
+        assert!(is_canonical(&got));
+        for i in 0..FALCON_512_N {
+            let want = ((f[i] as u32 + Q - g[i] as u32) % Q) as u16;
+            assert_eq!(got[i], want, "poly_sub coefficient {i}");
+        }
+    }
 }

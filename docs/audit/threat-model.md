@@ -3,7 +3,7 @@
 | | |
 | --- | --- |
 | Project | `stellar-pq` — post-quantum smart account on Stellar Soroban |
-| Version | First model; covers commits up to `f37ac25` (2026-05-05) |
+| Version | First model, covering commits up to `f37ac25` (2026-05-05). Refreshed 2026-10-02 for the Veridise remediations: two-step key rotation (VER-002), the `0x39`-only signature header (VER-001), and the spec-aligned input limits (VER-003). |
 | Scope | `contracts/falcon-512-core` (Falcon-512 verifier primitive) and `contracts/soroban-falcon-smart-account` (`CustomAccountInterface` impl: storage, domain separation, key rotation, `__check_auth`) |
 | Out of scope | Soroban host (`soroban-env-host`), validator consensus, the standalone `soroban-falcon-verifier` contract (no auth surface), and **any off-chain signer or frontend** (including the reference `web-demo/` and the vendored `falcon-wasm` signer). Frontends are user-replaceable; the contract MUST remain secure under any conforming — including malicious — signer. |
 | Owner | Soundness Labs |
@@ -26,10 +26,12 @@ host-provided `signature_payload`.
 Three crates back this:
 
 - **`falcon-512-core`** — `no_std`, soroban-sdk-free Falcon-512 verifier.
-  Defines `verify_512(pk, msg, sig)`. Shared by both Soroban contracts so
-  crypto fixes land in one place.
+  Defines `verify_512(pk, msg, sig)` and the streaming
+  `Falcon512Verification` session it wraps. Shared by both Soroban
+  contracts so crypto fixes land in one place.
 - **`soroban-falcon-smart-account`** — `CustomAccountInterface`
-  implementation. Owns `F_PUBKEY` storage, `rotate_key`, and the
+  implementation. Owns `F_PUBKEY` / `F_PENDING` storage, the two-step key
+  rotation (`propose_key`, `accept_key`, `cancel_key`), and the
   domain-separated `__check_auth`.
 - **`soroban-falcon-verifier`** — standalone "verify these bytes for me"
   contract. **Out of scope** for this model: it has no auth surface; it
@@ -59,10 +61,13 @@ flowchart LR
 
     subgraph Contract["Smart Account Contract WASM — trusted"]
         CheckAuth["__check_auth"]
-        RotateKey[rotate_key]
+        ProposeKey[propose_key]
+        AcceptKey[accept_key]
+        CancelKey[cancel_key]
         Constructor[__constructor]
         FalconCore["falcon-512-core::verify_512"]
         Storage[(F_PUBKEY)]
+        Pending[(F_PENDING)]
     end
 
     UI -- "1. build tx" --> RPC
@@ -80,9 +85,15 @@ flowchart LR
     UI -. "deploy / init (one-time)" .-> Host
     Host -. "set F_PUBKEY" .-> Constructor
     Constructor --> Storage
-    Host --> RotateKey
-    RotateKey -- "require_auth → CheckAuth" --> CheckAuth
-    RotateKey -- "set F_PUBKEY" --> Storage
+    Host --> ProposeKey
+    ProposeKey -- "require_auth → CheckAuth" --> CheckAuth
+    ProposeKey -- "set F_PENDING" --> Pending
+    Host --> CancelKey
+    CancelKey -- "require_auth → CheckAuth" --> CheckAuth
+    CancelKey -- "remove F_PENDING" --> Pending
+    Host --> AcceptKey
+    AcceptKey -- "proof by pending key" --> FalconCore
+    AcceptKey -- "F_PENDING → F_PUBKEY" --> Storage
 ```
 
 **Trust boundaries.**
@@ -102,9 +113,11 @@ flowchart LR
 | --- | --- | --- |
 | Falcon-512 private key (seed) | Browser memory / user-managed storage | **Critical** — controls the account |
 | Falcon-512 public key | `F_PUBKEY` (instance storage) | Public-by-design |
+| Proposed Falcon-512 public key | `F_PENDING` (instance storage, only while a rotation is pending) | Public-by-design |
 | Authorization preimage / `signature_payload` | Transient, host-built | Public-by-design |
 | Account funds, sub-balances, sub-state | Soroban ledger | Critical |
 | `DOMAIN_SEPARATOR` constant | Source code (`b"soroban-falcon-smart-account-v1"`) | Public-by-design — load-bearing for cross-context replay protection |
+| `ACCEPT_DOMAIN_SEPARATOR` constant | Source code (`b"soroban-falcon-smart-account-accept-v1"`) | Public-by-design — keeps `accept_key` proofs and transaction signatures from standing in for each other |
 
 ### What `signature_payload` actually binds
 
@@ -147,8 +160,8 @@ reference is illustrative only — out of scope for this model.
 | **Tampering** | **Tamper.1** — A network operator (or RPC) modifies bytes of the signed transaction in flight. <br> **Tamper.2** — An attacker writes directly to `F_PUBKEY` to substitute their own key. <br> **Tamper.3** — An attacker submits a non-canonical Falcon signature: a compressed encoding followed by garbage trailing bytes that the decoder ignores. |
 | **Repudiation** | **Repudiate.1** — The account holder later claims they did not authorize a transaction that succeeded. <br> **Repudiate.2** — A failed `__check_auth` leaves no on-chain trace, complicating after-the-fact incident review. |
 | **Information Disclosure** | **Info.1** — `__check_auth` execution time leaks information about the signature contents (e.g. nonce bits, position of rejected polynomial coefficients). <br> **Info.2** — The off-chain Falcon seed leaks (browser malware, malicious extension, hostile RPC operator script-injecting the demo page). <br> **Info.3** — Reuse of the same Falcon public key across multiple accounts allows third parties to link those accounts. |
-| **Denial of Service** | **DoS.1** — An attacker submits a transaction whose `signature_payload`-input message exceeds `FALCON_MAX_MESSAGE_SIZE`, forcing the verifier to allocate a buffer it can't service. <br> **DoS.2** — An attacker submits an oversized signature (`> FALCON_SIG_MAX_SIZE`) to exhaust the per-byte copy loop. <br> **DoS.3** — An attacker submits a Falcon CT-format (809-byte) signature, hoping the dispatcher pulls in a CT decoder path that has not been audited. <br> **DoS.4** — An unexpected condition inside `__check_auth` (missing pubkey, malformed stored bytes) triggers a `panic!`, propagating as a host trap and making the account unusable for the entire ledger. <br> **DoS.5** — An attacker spams `rotate_key` calls to burn the account's stored fees. <br> **DoS.6** — Operator deploys the contract with a malformed public key, bricking the account from minute zero. <br> **DoS.7** — An attacker submits an `__check_auth` whose Falcon polynomial work consumes more gas than the account holder budgeted. |
-| **Elevation of Privilege** | **Elevation.1** — A caller invokes `rotate_key(new_pk)` without proving control of the current key. <br> **Elevation.2** — An attacker constructs a payload that bypasses the domain-separation tag prepending, then re-uses a signature from a non-smart-account context. <br> **Elevation.3** — Key rotation race: an attacker who has stolen the current key submits a malicious tx in the same ledger as the user's `rotate_key`; if the malicious tx is sequenced first, it lands. <br> **Elevation.4** — A malformed canonicity check lets the attacker forge a signature whose decoded polynomial differs from what the verifier later operates on. |
+| **Denial of Service** | **DoS.1** — An attacker submits a very large message, hoping to overflow a fixed message buffer or force an allocation the verifier can't service. <br> **DoS.2** — An attacker submits an oversized signature (`> FALCON_SIG_MAX_SIZE`) to exhaust the per-byte copy loop. <br> **DoS.3** — An attacker submits a Falcon CT-format (809-byte) signature, hoping the dispatcher pulls in a CT decoder path that has not been audited. <br> **DoS.4** — An unexpected condition inside `__check_auth` (missing pubkey, malformed stored bytes) triggers a `panic!`, propagating as a host trap and making the account unusable for the entire ledger. <br> **DoS.5** — An attacker spams the rotation entry points (`propose_key`, `cancel_key`, `accept_key`) to burn the account's stored fees. <br> **DoS.6** — Operator deploys the contract with a malformed public key, bricking the account from minute zero. <br> **DoS.7** — An attacker submits an `__check_auth` whose Falcon polynomial work consumes more gas than the account holder budgeted. |
+| **Elevation of Privilege** | **Elevation.1** — A caller invokes `propose_key(new_pk)` or `cancel_key()` without proving control of the current key, or `accept_key(proof)` without proving possession of the pending key. <br> **Elevation.2** — An attacker constructs a payload that bypasses the domain-separation tag prepending, then re-uses a signature from a non-smart-account context. <br> **Elevation.3** — Key rotation race: an attacker who has stolen the current key acts before the user's `accept_key` lands, submitting malicious transactions or cancelling or replacing the pending proposal. <br> **Elevation.4** — A malformed canonicity check lets the attacker forge a signature whose decoded polynomial differs from what the verifier later operates on. |
 
 ---
 
@@ -161,21 +174,21 @@ citations are `file:line` against the commits in this repo.
 
 | ID | Mitigation |
 | --- | --- |
-| **Spoof.1.R.1** | Falcon-512 is EUF-CMA secure under the lattice assumptions reviewed by NIST. Forging a signature without the seed is computationally infeasible. The verifier path is `__check_auth` → `FalconVerifier::verify_512` (`contracts/falcon-512-core/src/verify.rs:58`), which uses the upstream-vetted hash-to-point + NTT-based verification. The implementation is regression-tested against **all 100 official NIST Falcon-512 KAT vectors** (`contracts/soroban-falcon-{verifier,smart-account}/tests/kat.rs` + `falcon512-KAT.rsp`), with negative tests `test_kat_wrong_message` and `test_kat_wrong_public_key` confirming the verifier rejects mutated inputs. |
-| **Spoof.2.R.1** | `__check_auth` Falcon-verifies `DOMAIN_SEPARATOR ‖ signature_payload` rather than `signature_payload` alone (`contracts/soroban-falcon-smart-account/src/lib.rs:44`, assembled at `lib.rs:201-204`). The standalone verifier contract intentionally does not prepend a tag, so a signature valid for one is computationally invalid for the other. |
+| **Spoof.1.R.1** | Falcon-512 is EUF-CMA secure under the lattice assumptions reviewed by NIST. Forging a signature without the seed is computationally infeasible. The verifier path is `__check_auth` → `FalconVerifier::verify_512` (`contracts/falcon-512-core/src/verify.rs:239`), which uses the upstream-vetted hash-to-point + NTT-based verification. The implementation is regression-tested against **all 100 official NIST Falcon-512 KAT vectors** (`contracts/soroban-falcon-{verifier,smart-account}/tests/kat.rs` + `falcon512-KAT.rsp`), with negative tests `test_kat_wrong_message` and `test_kat_wrong_public_key` confirming the verifier rejects mutated inputs. |
+| **Spoof.2.R.1** | `__check_auth` Falcon-verifies `DOMAIN_SEPARATOR ‖ signature_payload` rather than `signature_payload` alone (`contracts/soroban-falcon-smart-account/src/lib.rs:80`, assembled at `lib.rs:379-384`). The standalone verifier contract intentionally does not prepend a tag, so a signature valid for one is computationally invalid for the other. |
 | **Spoof.2.R.2** | A unit test (`test_domain_separator_is_fixed` in `src/lib.rs`) asserts the tag's exact bytes, so an accidental rename fails CI rather than silently breaking deployments. |
 | **Spoof.3.R.1** | The `signature_payload` includes `networkId` (SHA-256 of the network passphrase). A testnet signature embeds testnet's hash; mainnet's host computes a different `signature_payload` and Falcon verification fails. |
 | **Spoof.4.R.1** | The `signature_payload` includes `nonce`. The Soroban host tracks consumed nonces in account storage and refuses any auth entry whose nonce has already landed, regardless of signature validity. |
 | **Spoof.4.R.2** | The `signature_payload` includes `signatureExpirationLedger`. After that ledger, the host refuses the auth entry even if the nonce is fresh. |
-| **Spoof.5.R.1** | The `signature_payload` includes the full `rootInvocation` (target contract, function name, args, and sub-invocations). Any change to those bytes changes the SHA-256 input and the signature no longer verifies. The contract intentionally ignores `_auth_contexts` (`__check_auth` arg, `lib.rs:164`, with rationale at `lib.rs:153-158`) because the host has already established that the requested contexts are covered by the signed `rootInvocation`. |
+| **Spoof.5.R.1** | The `signature_payload` includes the full `rootInvocation` (target contract, function name, args, and sub-invocations). Any change to those bytes changes the SHA-256 input and the signature no longer verifies. The contract intentionally ignores `_auth_contexts` (`__check_auth` arg, `lib.rs:349`, with rationale at `lib.rs:340-343`) because the host has already established that the requested contexts are covered by the signed `rootInvocation`. |
 
 ### Tampering
 
 | ID | Mitigation |
 | --- | --- |
 | **Tamper.1.R.1** | The `signature_payload` is the host-side SHA-256 of the XDR preimage. Any in-flight modification by an RPC or network operator changes the bytes the host hashes; the recomputed payload no longer matches what the user signed and `__check_auth` rejects. |
-| **Tamper.2.R.1** | Soroban's host enforces that contract instance storage is writable only by the contract itself. The smart-account writes `F_PUBKEY` only inside `__constructor` (`lib.rs:85-101`) and `rotate_key` (`lib.rs:125-143`). External writes are not possible through the host API. |
-| **Tamper.3.R.1** | `verify.rs:120-124` rejects any non-zero trailing byte after the compressed encoding ends. Padded-format signatures pass because their tail is exactly zeroes; malformed sigs with garbage tails are rejected with `false`. |
+| **Tamper.2.R.1** | Soroban's host enforces that contract instance storage is writable only by the contract itself. The smart-account writes `F_PUBKEY` only inside `__constructor` (`lib.rs:199`) and `accept_key` (`lib.rs:300`), and `F_PENDING` only inside `propose_key` (`lib.rs:243`), `accept_key` (`lib.rs:301`), and `cancel_key` (`lib.rs:321`). External writes are not possible through the host API. |
+| **Tamper.3.R.1** | `verify.rs:147-156` rejects any non-zero trailing byte after the compressed encoding ends, and accepts zero padding only in the exact 666-byte padded form. Malformed sigs with garbage tails, or zero-padded to any other length, are rejected. |
 
 ### Repudiation
 
@@ -188,7 +201,7 @@ citations are `file:line` against the commits in this repo.
 
 | ID | Mitigation |
 | --- | --- |
-| **Info.1.R.1** | A constant-time analysis (Trail of Bits `constant-time-analysis` plugin) was run against `falcon-512-core` and the only identified issue (F-001, UDIV in `hash_to_point`'s rejection-sampling reduction) was remediated by replacing the `while v >= Q { v -= Q; }` loop with four constant-time `field_sub` calls (`verify.rs:333-336`, commit `06318c1`). See `docs/audit/constant-time-analysis.md` for full report. |
+| **Info.1.R.1** | A constant-time analysis (Trail of Bits `constant-time-analysis` plugin) was run against `falcon-512-core` and the only identified issue (F-001, UDIV in `hash_to_point`'s rejection-sampling reduction) was remediated by replacing the `while v >= Q { v -= Q; }` loop with four constant-time `field_sub` calls (commit `06318c1`; the reduction now lives in `squeeze_challenge`, `verify.rs:212-215`). See `docs/audit/constant-time-analysis.md` for full report. |
 | **Info.1.R.2** | Even prior to the fix, the inputs flagged were derived from public data (SHAKE256 over public nonce + message), and Soroban's deterministic gas metering does not surface microarchitectural timing at the network layer. |
 | **Info.2.R.1** | Out of scope for the contract layer — key custody is the frontend's responsibility. From the contract's point of view a leaked seed is indistinguishable from a legitimate user; damage is bounded by what each `signature_payload` authorizes (invocation + network + nonce + expiration are all bound; replay outside that scope is rejected per Spoof.3/4/5). Users needing stronger custody should drive the contract with a frontend that backs the seed with a hardware credential store (passkey / secure enclave). |
 | **Info.3.R.1** | Accepted: this is the same property as any single-key account scheme. Holders who want unlinkability should deploy separate accounts with separate seeds. |
@@ -197,35 +210,38 @@ citations are `file:line` against the commits in this repo.
 
 | ID | Mitigation |
 | --- | --- |
-| **DoS.1.R.1** | `verify.rs:71-73` rejects any `message.len() > FALCON_MAX_MESSAGE_SIZE` (16 384 bytes) before any allocation. The smart account further validates message length implicitly because `signature_payload` is always 32 bytes (a SHA-256 output) — the 16 KiB cap is for code-reuse safety. |
-| **DoS.2.R.1** | `lib.rs:176-179` rejects any signature with `len < FALCON_SIG_MIN_SIZE (42)` or `len > FALCON_SIG_MAX_SIZE (666)` before per-byte copy. |
-| **DoS.3.R.1** | A Falcon-512 CT-format signature is 809 bytes — already above `FALCON_SIG_MAX_SIZE`, so the size gate at `lib.rs:176-179` rejects it before any header inspection. The header byte's CT-nibble (`0x50 \| logn`) decode path is also rejected by the format gate in `verify.rs` (only `0x2X` and `0x3X` are accepted), giving two layers of defense. Reference: Falcon NIST Round-3 §3.11.1. The test `test_ct_format_rejected_by_size_gate` asserts the size-gate rejection path. |
-| **DoS.4.R.1** | `__check_auth` does not call `unwrap()` or `expect()`. Missing `F_PUBKEY` returns `Error::PublicKeyMissing` and malformed bytes return `Error::InvalidPublicKeySize` (`lib.rs:170-179`); per-byte copies use `?` rather than `unwrap` (`lib.rs:181-194`). `get_pubkey` (`lib.rs:111`) is now `Result`-returning, so no `expect` remains on any reachable path. The only remaining `panic!` on a write path is in `__constructor` (`lib.rs:87`), which runs once at deploy time and is intentional (see DoS.6). |
-| **DoS.5.R.1** | Each `rotate_key` call is itself an authorized invocation that costs gas to submit and consumes a nonce. Spamming requires the attacker to either pay all the fees themselves or hold the current Falcon key — and if they hold the key, draining funds is more attractive than griefing. |
-| **DoS.6.R.1** | Accepted: a malformed pubkey at deploy time bricks the account, but this is a feature — it surfaces a deployment bug at construction time rather than at first transaction. The constructor explicitly validates `pubkey.len() == 897` (`lib.rs:86-88`). |
-| **DoS.7.R.1** | Soroban metering bounds total instructions per transaction. The verifier work for Falcon-512 is fixed (NTT over 512 coefficients, one SHAKE256 over 32 + 31 = 63 bytes, one fixed-size norm check). An attacker cannot inflate this by submitting a different signature; the rejection-sampling loop is also bounded because the SHAKE output is finite per call. The per-byte copy loops that Scout flags as `dos_unbounded_operation` are bounded by upstream `FALCON_SIG_MAX_SIZE`/`FALCON_MAX_MESSAGE_SIZE`/`FALCON_512_PUBKEY_SIZE` size gates that the static analyzer cannot trace; documented as F-FP-1 in [`scout-scan.md`](scout-scan.md) and [`remediation-log.md`](remediation-log.md). |
+| **DoS.1.R.1** | The message has no length cap and no full-message buffer exists to overflow: the verifier contract hashes it through a fixed 1,024-byte chunk buffer (`soroban-falcon-verifier/src/lib.rs`, `MSG_CHUNK_SIZE`), so the stack frame is constant while CPU/memory cost grows linearly with length and is metered to the submitting transaction — an oversized message burdens only its own caller. The smart account is stricter still: it always hashes a fixed 63-byte message (`DOMAIN_SEPARATOR` + the 32-byte `signature_payload`). |
+| **DoS.2.R.1** | The smart account's `__check_auth` (`lib.rs:364-367`) and `accept_key` (`lib.rs:272-275`), and the verifier contract's `verify`, reject any signature with `len < FALCON_SIG_MIN_SIZE (617)` or `len > FALCON_SIG_MAX_SIZE (752)` before copying it; `Falcon512Verification::new` repeats the check (`verify.rs:114`). |
+| **DoS.3.R.1** | A Falcon-512 CT-format signature is 809 bytes — already above `FALCON_SIG_MAX_SIZE`, so the size gates (DoS.2.R.1) reject it before any header inspection. The header byte's CT-nibble (`0x50 \| logn`) decode path is also rejected by the format gate in `verify.rs` (only the exact detached header `0x39` is accepted), giving two layers of defense. Reference: Falcon NIST Round-3 §3.11.1. The test `test_ct_format_rejected_by_size_gate` asserts the size-gate rejection path. |
+| **DoS.4.R.1** | `__check_auth` does not call `unwrap()` or `expect()`. Missing `F_PUBKEY` returns `Error::PublicKeyMissing` (`lib.rs:351-355`) and a stored key of the wrong length returns `Error::InvalidPublicKeySize` (`lib.rs:357-362`); the bulk host→guest copies run only after length gates that make each destination exactly its source length (`lib.rs:364-377`). `get_pubkey` (`lib.rs:214`) and `get_pending_key` (`lib.rs:223`) return `Result`, so no `expect` remains on any reachable path. The only `panic!`s are in `__constructor` (`lib.rs:193`, `lib.rs:195`), which runs once at deploy time and is intentional (see DoS.6). |
+| **DoS.5.R.1** | `propose_key` and `cancel_key` call `require_auth()` first (`lib.rs:240`, `lib.rs:316`), so each call is an authorized invocation that costs gas and consumes a nonce; spamming them requires the current Falcon key, and a holder of that key would rather drain funds than grief. `accept_key` has no `require_auth`, so anyone may submit it, but it changes state only when the proof verifies under the pending key (`lib.rs:291-298`); a failed call leaves storage untouched and its fee is paid by whoever submitted it. |
+| **DoS.6.R.1** | Mitigated: the constructor rejects any key that is not a well-formed Falcon-512 encoding (897 bytes, `0x09` header, every coefficient below Q, no residual bits), using the same `check_pubkey_well_formed` gate as `propose_key` (`lib.rs:172-183`, called at `lib.rs:191`). A malformed key therefore fails the deployment instead of bricking the account. A well-formed key the operator does not control still bricks a fresh deployment; verifying the key before deploying remains an operational step. |
+| **DoS.7.R.1** | Soroban metering bounds total instructions per transaction. The polynomial work for Falcon-512 is fixed (NTT over 512 coefficients, one fixed-size norm check); in the smart account the hashed message is a fixed 63 bytes, and in the verifier contract the message hash grows linearly with a length the caller both supplies and pays for. An attacker cannot inflate the fixed work by submitting a different signature; the rejection-sampling loop is also bounded because the SHAKE output is finite per call. The signature/pubkey copy loops that Scout flags as `dos_unbounded_operation` are bounded by upstream `FALCON_SIG_MAX_SIZE`/`FALCON_512_PUBKEY_SIZE` size gates, and the message copy is chunked through a fixed 1,024-byte buffer; the static analyzer cannot trace either, documented as F-FP-1 in [`scout-scan.md`](scout-scan.md) and [`remediation-log.md`](remediation-log.md). |
 
 ### Elevation of Privilege
 
 | ID | Mitigation |
 | --- | --- |
-| **Elevation.1.R.1** | `rotate_key` calls `env.current_contract_address().require_auth()` (`lib.rs:129`) as its **first** action, which causes Soroban to route the auth check back through this contract's `__check_auth` — i.e. rotation requires a Falcon signature from the current key. Standard key-rotation semantics. The new-pubkey size check (`lib.rs:130-132`) runs **after** auth so an unauthenticated caller cannot probe pubkey-size handling. Integration tests `test_rotate_key_without_auth_fails` and `test_rotate_key_bad_size_after_auth_returns_error` pin the ordering. |
-| **Elevation.2.R.1** | The domain-separator prepending happens **inside** `__check_auth` (`lib.rs:201-204`) before `verify_512` is called. There is no caller-controlled path that skips it. The `payload_array` and `domain` are concatenated into a stack buffer whose length (`SIGNED_MESSAGE_MAX = 128`, declared at `lib.rs:48`) is enforced **at compile time** via `const _: () = assert!(SIGNED_MESSAGE_LEN <= SIGNED_MESSAGE_MAX);` (`lib.rs:67`), so a future change to `DOMAIN_SEPARATOR` that would overflow the buffer fails to build rather than truncating at runtime. |
-| **Elevation.3.R.1** | Partially mitigated, partially operational. The contract correctly rejects post-rotation signatures from the old key (because `F_PUBKEY` has already changed). What it cannot prevent is a malicious tx racing the rotation in the same ledger. **Operational mitigation:** users should pause activity on the account before rotating (no in-flight signed payloads with the old key). **Possible code-level mitigation:** a future `pause()` / `unpause()` admin pair, or a "rotate with monotonic version counter" pattern. **Open item — see §3 follow-ups.** |
-| **Elevation.4.R.1** | The decoder loop in `decode_sig_compressed` rejects `m == 0 && sign != 0` (negative zero) and `m > 2047` (overflow), and the canonicity check (Tamper.3.R.1) rejects trailing garbage. The decoded polynomial is what `verify_raw_512` operates on; the decoder cannot produce a polynomial that the verifier would treat differently than its bytes suggest. |
+| **Elevation.1.R.1** | `propose_key` and `cancel_key` call `env.current_contract_address().require_auth()` as their **first** action (`lib.rs:240`, `lib.rs:316`), which routes the auth check back through this contract's `__check_auth`, so both need a Falcon signature from the current key. `propose_key` validates the new key only **after** auth (`lib.rs:241`), so an unauthenticated caller cannot probe key handling. `accept_key` needs no `require_auth`: it activates the pending key only if `proof` is a Falcon signature by that key over `ACCEPT_DOMAIN_SEPARATOR ‖ SHA-256(pending_pubkey)` (`lib.rs:283-298`). The two domain tags are prefix-free against each other (module docs, `lib.rs:51-53`), so an accept proof cannot pass as a transaction signature or the reverse. Integration tests `test_propose_key_without_auth_fails`, `test_cancel_key_without_auth_fails`, `test_propose_key_bad_size_after_auth_returns_error`, `test_accept_with_invalid_proof_fails`, and `test_accept_without_propose_fails` pin this. |
+| **Elevation.2.R.1** | The domain-separator prepending happens **inside** `__check_auth` (`lib.rs:379-384`) before `verify_512` is called. There is no caller-controlled path that skips it. The `payload_array` and `domain` are concatenated into a stack buffer whose length (`SIGNED_MESSAGE_MAX = 128`, declared at `lib.rs:84`) is enforced **at compile time** via `const _: () = assert!(SIGNED_MESSAGE_LEN <= SIGNED_MESSAGE_MAX);` (`lib.rs:108`, with the same assert for the accept message at `lib.rs:109`), so a future change to either domain tag that would overflow the buffer fails to build rather than truncating at runtime. |
+| **Elevation.3.R.1** | Partially mitigated, partially operational. Once `accept_key` lands, signatures from the old key fail because `F_PUBKEY` has changed. Two-step rotation (VER-002) does not shorten the window in which a stolen current key is useful: until `accept_key` lands, that key can still authorize transactions and can cancel or replace the proposal. **Operational mitigation:** users should pause activity on the account before rotating (no in-flight signed payloads with the old key) and submit `accept_key` promptly after `propose_key`. **Possible code-level mitigation:** a `pause()` / `unpause()` pair, or a key-version counter bound into the domain separator. **Open item — see §3 follow-ups.** |
+| **Elevation.4.R.1** | The decoder loop in `decode_sig_compressed` rejects `m == 0 && sign != 0` (negative zero) and `m > 5833` (a magnitude whose square alone exceeds the `L2_BOUND_512` norm bound, so no valid signature can contain it), and the canonicity check (Tamper.3.R.1) rejects trailing garbage. The decoded polynomial is what `verify_raw_512` operates on; the decoder cannot produce a polynomial that the verifier would treat differently than its bytes suggest. |
 
 ### Open follow-up items
 
 These are not gaps in the current threat model so much as future work that
 the model has surfaced:
 
-1. **Elevation.3 — rotate-key race.** Decide whether to add a `pause()`
-   admin pair. Not blocking for the audit, but worth scoping with the
-   reviewer — some firms will recommend it as standard for any
-   account-abstraction contract that supports key rotation.
-2. **DoS.5 hardening.** Track gas spent per-account on failed
-   `rotate_key` calls and rate-limit at a high water mark, if the audit
-   firm flags spam as a real concern. Currently relies on economics.
+1. **Elevation.3 — key-rotation race.** Decide whether to add a `pause()`
+   admin pair. The Veridise audit did not raise it as a finding; its
+   report treats rotation as an operator action and recommends rotating
+   immediately after any suspected compromise. Some reviewers still
+   recommend a pause pair as standard for account-abstraction contracts
+   that support key rotation.
+2. **DoS.5 hardening.** Track gas spent per-account on failed rotation
+   calls and rate-limit at a high water mark, if spam becomes a real
+   concern (the Veridise audit did not flag it). Currently relies on
+   economics.
 3. **CI integration.** Wire `cargo audit`, `cargo clippy`, and the
    constant-time scan into a CI workflow so future commits cannot
    regress on these guarantees silently.
@@ -237,7 +253,7 @@ the model has surfaced:
 ### Reflection
 
 - **Did the model surface anything not already in code?** Yes — the
-  rotate-key race (Elevation.3) was identified by walking the data flow
+  key-rotation race (Elevation.3) was identified by walking the data flow
   rather than by review of the diff. It is now an acknowledged
   operational concern with an open code-level follow-up.
 - **Are mitigations real or aspirational?** Every mitigation in §3 is
@@ -246,14 +262,13 @@ the model has surfaced:
 - **Did the model cite or test the load-bearing constants?** Yes —
   `DOMAIN_SEPARATOR` has a regression test (`test_domain_separator_is_fixed`),
   the size limits have rejection tests
-  (`test_ct_format_rejected_by_size_gate`, `test_message_too_long_rejected`),
+  (`test_ct_format_rejected_by_size_gate`, `test_sig_size_gate_bounds`),
   and the constant-time fix has its own report
   (`docs/audit/constant-time-analysis.md`).
 - **What would have been better caught earlier?** The CT-format
-  rejection is currently enforced by the size gate plus a deleted
-  decoder branch. A defense-in-depth assertion at the header check
-  would make the intent more obvious to a future reader, even though
-  it is not currently exploitable.
+  rejection was originally enforced only by the size gate plus a
+  deleted decoder branch. Since VER-001 the header check rejects it
+  explicitly as well, because only `0x39` is accepted.
 - **What surprised the team?** The depth of replay protection in
   `signature_payload` itself — `networkId` + `nonce` +
   `signatureExpirationLedger` + `invocation` collectively defeat almost
@@ -266,4 +281,5 @@ the model has surfaced:
 Re-run this exercise when (a) any storage layout changes, (b) a new
 public function is added to the smart account, (c) the Soroban SDK
 major version bumps, (d) a new accepted Falcon signature format is
-added, or (e) before any audit firm engagement.
+added, or (e) before any further audit engagement. The model was last
+refreshed after the Veridise audit (see the header table).

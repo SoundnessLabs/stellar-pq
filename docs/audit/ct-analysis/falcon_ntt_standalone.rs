@@ -2,11 +2,11 @@
 // flattened so `rustc --emit=asm` can build it without cargo.
 //
 // PURPOSE: feed to constant-time-analyzer for the Falcon-512 SCF audit
-// readiness pack. Threat-model note: in the on-chain Soroban context the
-// inputs to verify (pubkey, message, signature) are all PUBLIC, so timing
+// pack. Threat-model note: in the on-chain Soroban context the inputs to
+// verify (pubkey, message, signature) are all PUBLIC, so timing
 // side-channels do not leak secrets. We still run CT analysis as a
-// hygiene/audit-readiness signal and to surface any DIV/IDIV that would
-// hurt host-side determinism or future re-use of this code.
+// hygiene signal and to surface any DIV/IDIV that would hurt host-side
+// determinism or future re-use of this code.
 
 #![allow(dead_code)]
 #![crate_type = "lib"]

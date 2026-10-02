@@ -9,15 +9,18 @@
 | Architectures | `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu` |
 | Optimization levels | `-Oz` (matches release profile) and `-O3` (cross-check) |
 | Result summary | **PASSED** on every (arch, opt) cell after F-001 remediation. One informational finding identified during the initial scan was fixed in the same commit; both states are documented below for audit traceability. |
+| Re-run | 2026-10-02, after the Veridise audit, on the code with all of its fixes merged: **PASSED** on every (arch, opt) cell. |
 
 ---
 
 ## 1. Threat-model context
 
 The Soroban smart-account contract (`contracts/soroban-falcon-smart-account`)
-and the standalone verifier contract (`contracts/soroban-falcon-verifier`)
-both invoke `falcon-512-core` only through `FalconVerifier::verify_512(pk,
-msg, sig)`. **Every input to that function is public**:
+calls `falcon-512-core` through `FalconVerifier::verify_512(pk, msg, sig)`;
+the standalone verifier contract (`contracts/soroban-falcon-verifier`) runs
+the same checks through the streaming `Falcon512Verification` session
+(`new`, `absorb_message`, `finalize`). **Every input to verification is
+public**:
 
 - `pk` — a Falcon-512 public key, read from contract storage.
 - `msg` — `DOMAIN_SEPARATOR || signature_payload` (smart account) or the raw
@@ -32,8 +35,8 @@ contract execution by deterministic gas units rather than wall-clock time,
 so even a hypothetical CT violation would not produce an exploitable
 microarchitectural signal at the network layer.
 
-The constant-time review is included in the SCF Audit Bank readiness pack
-for two reasons:
+The constant-time review is part of the SCF Audit Bank audit pack for two
+reasons:
 
 1. **Defensive depth.** Falcon verifiers may be re-used outside the Soroban
    sandbox (for example, in a desktop wallet or off-chain validator) where
@@ -60,11 +63,15 @@ in [`ct-analysis/`](ct-analysis/):
   do not affect the *opcodes* the analyzer inspects.
 - [`falcon_verify_standalone.rs`](ct-analysis/falcon_verify_standalone.rs) —
   flattened union of `ntt.rs` + `verify.rs`, with one substitution:
-  `hash_to_point` is replaced by a stub that uses an LCG instead of
-  SHAKE256. The control-flow shape is preserved (rejection-sampling loop,
-  `while v >= Q { v -= Q; }`). This is faithful for CT analysis because
-  SHAKE256 lives in the `sha3` crate (not analyzed here) and its inputs
-  (nonce, message) are public.
+  the challenge squeeze is replaced by a stub that uses an LCG instead of
+  SHAKE256. The control-flow shape is preserved (rejection-sampling loop
+  with the four bounded `field_sub` reductions that replaced
+  `while v >= Q { v -= Q; }` in F-001). This is faithful for CT analysis
+  because SHAKE256 lives in the `sha3` crate (not analyzed here) and its
+  inputs (nonce, message) are public. The fixture keeps the one-shot
+  `verify_512` shape rather than the streaming session, and omits two
+  branches on public data (the 666-byte-only padding rule and an
+  unreachable `v >= Q` exit); its header lists these differences.
 
 Each fixture was scanned across the matrix `{arm64, x86_64} × {-Oz, -O3}`,
 where `-Oz` matches the production release profile in
@@ -108,17 +115,17 @@ table because the operand is a "public parameter (length, count)".
 
 ## 4. Detailed finding
 
-### F-001 — Variable-time `udiv` from rejection-sampling loop in `hash_to_point` *(REMEDIATED)*
+### F-001 — Variable-time `udiv` from the challenge rejection-sampling loop *(REMEDIATED)*
 
 | Field | Value |
 | --- | --- |
 | Severity | Informational (no impact under threat model) |
 | Status | **Fixed** in the same commit as this report |
-| Location | `contracts/falcon-512-core/src/verify.rs::FalconVerifier::hash_to_point` — inlined into `verify_512` at `-Oz` |
+| Location | `contracts/falcon-512-core/src/verify.rs`, the challenge rejection-sampling loop (`Falcon512Verification::squeeze_challenge`; `hash_to_point` when this finding was raised) — inlined into the verify path at `-Oz` |
 | Architectures | `arm64` (`udiv`), `x86_64` (`divw`) |
 | Triggering opt level | `-Oz`, `-Os` (production); not present at `-O2`/`-O3` |
 
-**Description.** The body of `hash_to_point` contains the classic Falcon
+**Description.** The challenge-derivation loop contains the classic Falcon
 rejection-sampling reduction:
 
 ```rust

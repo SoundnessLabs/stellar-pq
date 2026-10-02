@@ -12,11 +12,13 @@ which scopes native verification for the three NIST PQ signature schemes
 FALCON-512 is implemented today; see [Roadmap](#roadmap) for what's
 next.
 
-> **WARNING.** This code has not been audited. Do **not** use in
-> production or with real funds until a professional security audit has
-> been completed. A formal review under the
+> **Audited.** Veridise audited the three contract crates under the
 > [Stellar SCF Soroban Security Audit Bank](https://stellar.gitbook.io/scf-handbook/supporting-programs/audit-bank/official-rules)
-> is being scheduled — see the audit pack in [`docs/audit/`](./docs/audit/README.md).
+> (report V2, 2026-09-10): five findings, none high or critical, all fixed
+> in this code. The report and the audit pack are in
+> [`docs/audit/`](./docs/audit/README.md). The instances already deployed on
+> testnet and mainnet predate the fixes, so do **not** use them in
+> production or with real funds. An audit is not a guarantee of security.
 
 ## What's here
 
@@ -24,10 +26,10 @@ next.
 | --- | --- |
 | [`contracts/falcon-512-core`](./contracts/falcon-512-core) | Pure-Rust, `no_std`, soroban-sdk-free Falcon-512 verifier. Shared by the two contracts so crypto fixes land in one place. |
 | [`contracts/soroban-falcon-verifier`](./contracts/soroban-falcon-verifier) | Standalone Soroban contract exposing `verify(pk, msg, sig) -> bool` as a public utility. |
-| [`contracts/soroban-falcon-smart-account`](./contracts/soroban-falcon-smart-account) | Soroban `CustomAccountInterface` that authorizes transactions with a Falcon-512 signature over a domain-separated payload. Supports `__constructor(falcon_pubkey)` and `rotate_key`. |
+| [`contracts/soroban-falcon-smart-account`](./contracts/soroban-falcon-smart-account) | Soroban `CustomAccountInterface` that authorizes transactions with a Falcon-512 signature over a domain-separated payload. Supports `__constructor(falcon_pubkey)` and two-step key rotation (`propose_key` / `accept_key` / `cancel_key`): a new key only becomes active after a proof-of-possession signature by that key, so a mistyped rotation cannot brick the account. |
 | [`web-demo`](./web-demo) | Vite + React reference frontend driving the smart account — deploys, funds, and submits Falcon-signed transfers from the browser using a vendored `falcon-wasm` signer. **Out of audit scope:** frontends are user-replaceable; the contract must remain secure under any signer (see [`docs/audit/threat-model.md`](./docs/audit/threat-model.md)). |
 | [`e2e`](./e2e) | Reproducible testnet harness — produces an audit-grade JSON receipt with a real Falcon-signed transaction. See [`e2e/README.md`](./e2e/README.md). |
-| [`docs/audit`](./docs/audit/README.md) | Complete pre-audit security pack — threat model, constant-time analysis, dependency / lint / Scout scans, remediation log, optimization report, raw tool outputs, and committed e2e receipts. Indexed in [`docs/audit/README.md`](./docs/audit/README.md). |
+| [`docs/audit`](./docs/audit/README.md) | The Veridise audit report and the security pack — per-finding write-ups, threat model, constant-time analysis, dependency / lint / Scout scans, remediation log, optimization report, raw tool outputs, and committed e2e receipts. Indexed in [`docs/audit/README.md`](./docs/audit/README.md). |
 
 The verifier implements the **NIST Round-3 Falcon-512 submission** (the
 "original Falcon" design) and is validated against the 100 official
@@ -101,31 +103,33 @@ plugin or its analyzer script — see `docs/audit/ct-analysis/run.sh`.
 ├── web-demo/                       # Vite + React demo of the smart account
 ├── e2e/                            # reproducible testnet harness (Bun)
 └── docs/
-    └── audit/                          # pre-audit security pack — see docs/audit/README.md
+    └── audit/                          # audit report + security pack — see docs/audit/README.md
 ```
 
-## Audit readiness
+## Audit
 
-The repo is being prepared for an SCF Soroban Security Audit Bank
-engagement. The complete pre-audit pack — threat model, constant-time
-analysis, dependency / lint / Scout scans, remediation log,
-optimization report, raw tool outputs, and committed e2e receipts for
-every on-chain deployment — is indexed in
-[`docs/audit/README.md`](./docs/audit/README.md).
+Veridise audited the three contract crates for the SCF Soroban Security
+Audit Bank. The report (V2, 2026-09-10) found five issues, none high or
+critical, and confirms all five fixed; it is in
+[`docs/audit/reports/`](./docs/audit/reports/). The full pack (report,
+per-finding write-ups, threat model, constant-time analysis, dependency /
+lint / Scout scans, remediation log, optimization report, raw tool
+outputs, and committed e2e receipts for every on-chain deployment) is
+indexed in [`docs/audit/README.md`](./docs/audit/README.md).
 
 ## Status
 
 | Area | Status |
 | --- | --- |
-| `falcon-512-core` verify path | Constant-time-clean at the contract's `-Oz` profile (see `docs/audit/constant-time-analysis.md`); 6 unit tests |
-| Test coverage | **40+ tests across the 3 crates** (full suite green), including a `tests/kat.rs` suite that replays **all 100 official NIST Round-3 Falcon-512 KAT vectors** (`tests/falcon512-KAT.rsp`), wrong-message / wrong-public-key negatives, a **DEC-002 malleability regression test**, and a 16 KB worst-case gas benchmark |
-| Smart-account contract | Domain-separated `__check_auth`, panic-free runtime paths, key rotation, KAT + integration + benchmark tests |
-| Standalone verifier contract | KAT + integration + benchmark tests; deterministic Soroban env-test snapshots committed under `test_snapshots/`; includes a DEC-002 malleability regression test and a 16 KB worst-case gas benchmark |
+| `falcon-512-core` verify path | Constant-time-clean at the contract's `-Oz` profile (see `docs/audit/constant-time-analysis.md`); 28 unit tests, including exhaustive field-arithmetic checks |
+| Test coverage | **75 tests across the 3 crates** (full suite green; the contract crates' integration and benchmark suites need `--features testutils`), including a `tests/kat.rs` suite that replays **all 100 official NIST Round-3 Falcon-512 KAT vectors** (`tests/falcon512-KAT.rsp`), wrong-message / wrong-public-key negatives, a **DEC-002 malleability regression test**, and long-message gas benchmarks (16 KiB and 64 KiB) |
+| Smart-account contract | Domain-separated `__check_auth`, panic-free runtime paths, two-step key rotation (`propose_key` / `accept_key` / `cancel_key`), KAT + integration + benchmark tests |
+| Standalone verifier contract | KAT + integration + benchmark tests; deterministic Soroban env-test snapshots committed under `test_snapshots/`; includes a DEC-002 malleability regression test and long-message gas benchmarks (16 KiB and 64 KiB) |
 | **Deployed (testnet)** | Standalone verifier live at [`CDDZZJ3B3BMKBPJ7ZVMC3JQC7MDNIODUXYHBCHNCGVXAL56UFBEPM4RC`](https://stellar.expert/explorer/testnet/contract/CDDZZJ3B3BMKBPJ7ZVMC3JQC7MDNIODUXYHBCHNCGVXAL56UFBEPM4RC) — transactions and receipt in [`docs/audit/README.md`](./docs/audit/README.md#on-chain-deployments). |
 | **Deployed (mainnet)** | Standalone verifier live at [`CA5RY3BUC4AXNQ4MJJITOUZVMFO3MW3CF4743SIAD46CGY4ICSU6J7OY`](https://stellar.expert/explorer/public/contract/CA5RY3BUC4AXNQ4MJJITOUZVMFO3MW3CF4743SIAD46CGY4ICSU6J7OY) — WASM byte-identical to the testnet artifact; transactions and receipt in [`docs/audit/README.md`](./docs/audit/README.md#on-chain-deployments). |
 | Web demo | Reference frontend — **out of audit scope**; functional on testnet |
 | End-to-end testnet flow | One full Falcon-signed transfer landed on testnet via the smart account (see receipt) |
-| Mainnet | Standalone verifier deployed (see above). **Audit still pending** — production reliance on the verifier, and any smart-account mainnet use, remain not recommended until audit completion and TM-002 follow-up. |
+| Mainnet | Standalone verifier deployed (see above). **Audit complete** (Veridise report V2: all five findings fixed in this code), but the deployed verifier predates the fixes and has not been redeployed. Production reliance on it, and any smart-account mainnet use, remain not recommended until then; the TM-002 follow-up is also still open. |
 
 ## Roadmap
 

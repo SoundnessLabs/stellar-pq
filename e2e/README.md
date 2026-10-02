@@ -1,9 +1,10 @@
 # Falcon smart-account end-to-end testnet harness
 
-A reproducible, audit-grade evidence script for the SCF Audit Bank
-submission. Deploys the contract, funds it, then sends a real
-Falcon-512-signed transfer on Stellar testnet and writes a JSON receipt
-with explorer URLs the auditor can click and verify externally.
+A reproducible, audit-grade evidence script, written for the SCF Audit
+Bank audit (now complete; see [`docs/audit/`](../docs/audit/README.md)).
+Deploys the contract, funds it, then sends a real Falcon-512-signed
+transfer on Stellar testnet and writes a JSON receipt with explorer URLs
+anyone can click to verify the run externally.
 
 ## What you need
 
@@ -78,7 +79,7 @@ directory is gitignored — commit a sanitized copy to
 }
 ```
 
-The auditor can independently verify the receipt by:
+Anyone can independently verify the receipt by:
 
 1. Opening `transfer.explorer_url` and confirming the tx exists, has
    status SUCCESS, and the source contract is `smart_account_id`.
@@ -99,13 +100,16 @@ The auditor can independently verify the receipt by:
   controls a throwaway testnet account. If you set `FALCON_SEED` in
   the environment, the receipt omits it unless you also export
   `RECEIPT_INCLUDE_SEED=1`.
-- The harness does not handle key rotation. To exercise `rotate_key`,
-  copy the smart-account-id out of the receipt and run a separate
-  `stellar contract invoke ... rotate_key ...` flow.
+- The harness does not handle key rotation. Rotation is a two-step flow
+  (`propose_key` with the current key, then `accept_key` with a
+  proof-of-possession signature by the pending key over
+  `"soroban-falcon-smart-account-accept-v1" || SHA-256(pending_pubkey)`;
+  `cancel_key` drops a pending proposal). To exercise it, copy the
+  smart-account-id out of the receipt and run separate
+  `stellar contract invoke ...` calls.
 - This script signs with a hot key in the harness process. In a real
   production wallet, the Falcon signing should happen inside a
-  hardware-backed credential store (open item Tamper.4 in the threat
-  model).
+  hardware-backed credential store (see Info.2 in the threat model).
 
 ## Troubleshooting
 
