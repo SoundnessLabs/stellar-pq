@@ -20,8 +20,8 @@ pub use falcon_512_core::{
 const MSG_CHUNK_SIZE: usize = 1024;
 
 // Bound the worst-case verify() frame at build time: one message chunk,
-// 897 B pubkey, 752 B signature, plus verify_512's fixed arrays. The
-// wasm32 shadow stack defaults to 1 MiB.
+// 897 B pubkey, 752 B signature, plus the core verifier's fixed arrays.
+// The wasm32 shadow stack defaults to 1 MiB.
 const _: () = assert!(
     MSG_CHUNK_SIZE + FALCON_512_PUBKEY_SIZE + (FALCON_SIG_MAX_SIZE as usize) <= 64 * 1024
 );

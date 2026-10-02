@@ -354,7 +354,7 @@ impl CustomAccountInterface for FalconSmartAccount {
             .get(&FALCON_PUBKEY_KEY)
             .ok_or(Error::PublicKeyMissing)?;
 
-        // Keep this. __constructor and rotate_key already enforce the
+        // Keep this. __constructor and accept_key already enforce the
         // length, but it is what makes the copy below panic-free, and
         // __check_auth cannot panic.
         if pubkey.len() != FALCON_512_PUBKEY_SIZE as u32 {

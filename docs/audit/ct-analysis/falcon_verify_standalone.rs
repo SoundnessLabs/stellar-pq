@@ -8,7 +8,7 @@
 // apart from brace style, and decode_pubkey's `debug_assert_eq!`, which
 // compiles out at the -Oz/-O3 levels analyzed here.
 //
-// Two deliberate structural differences:
+// Deliberate differences, none of which touches the arithmetic analyzed:
 //
 //   * The real verifier hashes the message through a streaming session
 //     (Falcon512Verification::new -> absorb_message -> finalize) so message
@@ -19,7 +19,11 @@
 //     The real one feeds SHAKE256 over PUBLIC inputs (nonce + message), so
 //     its CT properties are out of scope; the stand-in is deterministic and
 //     keeps the same control-flow shape (rejection-sampling loop with the
-//     four bounded `field_sub` reductions).
+//     four bounded `field_sub` reductions). It omits the crate's
+//     unreachable `v >= Q` early return.
+//   * The canonicity check here rejects nonzero trailing bytes but does not
+//     restrict zero padding to the 666-byte padded form, as the crate does.
+//     Both omissions are branches on public data.
 
 #![allow(dead_code)]
 #![crate_type = "lib"]

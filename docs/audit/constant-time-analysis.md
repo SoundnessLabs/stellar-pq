@@ -15,9 +15,11 @@
 ## 1. Threat-model context
 
 The Soroban smart-account contract (`contracts/soroban-falcon-smart-account`)
-and the standalone verifier contract (`contracts/soroban-falcon-verifier`)
-both invoke `falcon-512-core` only through `FalconVerifier::verify_512(pk,
-msg, sig)`. **Every input to that function is public**:
+calls `falcon-512-core` through `FalconVerifier::verify_512(pk, msg, sig)`;
+the standalone verifier contract (`contracts/soroban-falcon-verifier`) runs
+the same checks through the streaming `Falcon512Verification` session
+(`new`, `absorb_message`, `finalize`). **Every input to verification is
+public**:
 
 - `pk` — a Falcon-512 public key, read from contract storage.
 - `msg` — `DOMAIN_SEPARATOR || signature_payload` (smart account) or the raw
@@ -61,10 +63,14 @@ in [`ct-analysis/`](ct-analysis/):
 - [`falcon_verify_standalone.rs`](ct-analysis/falcon_verify_standalone.rs) —
   flattened union of `ntt.rs` + `verify.rs`, with one substitution:
   the challenge squeeze is replaced by a stub that uses an LCG instead of
-  SHAKE256. The control-flow shape is preserved (rejection-sampling loop,
-  `while v >= Q { v -= Q; }`). This is faithful for CT analysis because
-  SHAKE256 lives in the `sha3` crate (not analyzed here) and its inputs
-  (nonce, message) are public.
+  SHAKE256. The control-flow shape is preserved (rejection-sampling loop
+  with the four bounded `field_sub` reductions that replaced
+  `while v >= Q { v -= Q; }` in F-001). This is faithful for CT analysis
+  because SHAKE256 lives in the `sha3` crate (not analyzed here) and its
+  inputs (nonce, message) are public. The fixture keeps the one-shot
+  `verify_512` shape rather than the streaming session, and omits two
+  branches on public data (the 666-byte-only padding rule and an
+  unreachable `v >= Q` exit); its header lists these differences.
 
 Each fixture was scanned across the matrix `{arm64, x86_64} × {-Oz, -O3}`,
 where `-Oz` matches the production release profile in
