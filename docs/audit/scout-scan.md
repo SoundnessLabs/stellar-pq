@@ -7,7 +7,7 @@
 | Scope | `contracts/soroban-falcon-smart-account`, `contracts/soroban-falcon-verifier` |
 | Out of scope | `contracts/falcon-512-core` — Scout requires one of `ink`, `soroban`, or `substrate-pallets` as a dependency to know what it is analyzing; the core crate is `no_std` and soroban-sdk-free, so Scout cannot run on it. The CT analyzer (`docs/audit/constant-time-analysis.md`) covers `falcon-512-core` instead. |
 | Listed under | Stellar SCF Audit Bank readiness checklist — bonus item "Security Tool Scanning: Report from approved [ecosystem scanning tools](https://developers.stellar.org/docs/tools/developer-tools/security-tools)". |
-| Result | All Critical-severity findings remediated. Two categories of false positives remain on each contract — both verified to be Scout's static analysis missing the upstream size gates / compile-time constants. Documented below for the audit firm. |
+| Result | All Critical-severity findings remediated. Two categories of false positives remain on each contract — both verified to be Scout's static analysis missing the upstream size gates / compile-time constants. Documented below for reviewers; the Veridise audit raised none of them. |
 
 ---
 
@@ -134,7 +134,7 @@ analysis traces neither the size-gate guards nor the chunking, so it
 sees "variable-length" loops.
 
 We could suppress with `#[allow(...)]` if Scout supported it, but a
-documented note is more transparent for the audit firm.
+documented note is more transparent for reviewers.
 
 ### F-FP-2 — `[ENHANCEMENT] soroban_version` claims latest is 26.0.0
 

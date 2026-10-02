@@ -5,7 +5,7 @@
 | Project | `stellar-pq` — Falcon-512 smart account on Stellar Soroban |
 | Last updated | 2026-10-02 (Veridise report V2 confirms VER-001..005 fixed; the five fix PRs merged together) |
 | Scope | Issues identified by self-review, threat modeling, constant-time analysis, dependency audit, clippy lints, a multi-agent adversarial audit (2026-06-07), and the Veridise audit engagement (VER-nnn rows, severities on Veridise's scale). Row VER-nnn is the report's finding V-FSA-VUL-nnn; the report itself is [`reports/VAR_Stellar_260810_Soundness_Labs_Falcon_512-V2.pdf`](reports/VAR_Stellar_260810_Soundness_Labs_Falcon_512-V2.pdf). |
-| Standing commitment | Per the Stellar SCF Audit Bank initial-audit terms, all critical, high, and medium severity findings produced by the audit firm will be addressed within 20 business days of the report's delivery, with this log updated to reflect each fix. |
+| Standing commitment | Per the Stellar SCF Audit Bank initial-audit terms, all critical, high, and medium severity findings produced by the audit firm will be addressed within 20 business days of the report's delivery, with this log updated to reflect each fix. Met for the Veridise audit: the V1 report was delivered 2026-08-24 and all five findings, including the one Medium, were fixed by 2026-08-27. |
 
 ## Severity definitions
 
@@ -105,19 +105,19 @@ proposal. The window now spans two transactions instead of one.
 
 **Plan.**
 
-1. Decide with the audit firm whether to add a `pause()` / `unpause()`
-   admin pair (also routed through `__check_auth`) so the operator can
-   freeze the account before rotating, sequence-isolating the old key.
+1. Decide whether to add a `pause()` / `unpause()` admin pair (also
+   routed through `__check_auth`) so the operator can freeze the account
+   before rotating, sequence-isolating the old key.
 2. Alternatively, add a monotonic `key_version: u32` counter and bind
    it into the domain separator (`b"...v1" → b"...v1:N"`), invalidating
    all old-key signatures the moment a rotation lands. This is more
    invasive (changes the signing protocol).
 
-**Why deferred.** Decision depends on the firm's scoping advice and
-whether other reviewers consider it a finding for this contract class.
-The Veridise report did not raise it as a finding: its trust model
-treats a rotation as an operator action (§4.1) and recommends rotating
-immediately after any suspected compromise (§4.2).
+**Why deferred.** The Veridise audit did not raise it as a finding: its
+trust model treats a rotation as an operator action (§4.1) and recommends
+rotating immediately after any suspected compromise (§4.2). It stays open
+as a possible hardening item, to be revisited if another reviewer
+considers it a finding for this contract class.
 
 ### TM-003 — Rotation spam
 
@@ -131,8 +131,8 @@ that costs gas to submit and consumes a nonce. An attacker holding the
 current key can drain funds directly via a transfer; spamming the rotation
 calls is strictly less attractive. `accept_key` can be submitted by anyone,
 but without a valid proof from the pending key it fails without touching
-storage, and the submitter pays for it. If the audit firm flags spam as a
-real concern, this row will be reopened.
+storage, and the submitter pays for it. The Veridise audit did not flag
+it; the row will be reopened if spam becomes a real concern.
 
 ### CI-001 — Continuous integration
 
@@ -150,7 +150,8 @@ F-001 UDIV, the keccak advisory, or a new clippy regression.
 2. Pin the rust toolchain via `rust-toolchain.toml` so CI and developer
    machines agree on the lowering rules behind the CT scan.
 
-**Why deferred.** Hygiene rather than security; not blocking submission.
+**Why deferred.** Hygiene rather than security; it did not block the
+audit.
 
 ---
 
@@ -167,4 +168,4 @@ F-001 UDIV, the keccak advisory, or a new clippy regression.
 | 2026-08-24 | VER-002 (Veridise #1288) fixed: `rotate_key` removed in favor of two-step `propose_key` / `accept_key` (pending-key proof of possession) / `cancel_key`; well-formedness gate on propose **and** constructor. Follow-up: TM-002 revisit + threat-model `rotate_key` references need a refresh pass. |
 | 2026-08-27 | Audit-firm finding (#1291) registered as VER-003 and fixed: signature length range aligned to the spec-derived `[617, 752]`, coefficient magnitude cap re-derived from the norm bound (5,833), and the message length cap removed in favor of chunked streaming verification. Benchmarks, threat model, Scout rationale, and the CT-analysis standalone updated; unit + KAT + integration tests and both WASM builds pass. Testnet/mainnet redeploy of the rebuilt artifacts pending. |
 | 2026-08-27 | Final pass over the merged branch against the full report. The three Executive-Summary recommendations are now tracked as VER-R1/R2/R3: R1 satisfied by VER-004, R3 implemented here (`ntt.rs` gained its first tests — exhaustive field arithmetic against a naive oracle, twiddle-table regeneration from `R·PHI^±brv9(i)`, NTT round trip, schoolbook cross-check; `verify.rs` gained truncation, unused-bit, and public-key coefficient parser tests), R2 (representation types) deliberately deferred with rationale. Also reconciled references the VER-003 streaming refactor had invalidated: `verify_raw_512` documented an `s2` range of `[-2047, 2047]` that the norm-derived cap replaced, and the constant-time standalone plus its report still named `hash_to_point`. The standalone is now byte-identical to the crate for every function the analysis reasons about. |
-| 2026-10-02 | Veridise report V2 (2026-09-10) marks all five findings Fixed, each confirmed at its PR (V-FSA-VUL-001…005 ↔ VER-001…005 ↔ PRs #2, #3, #4, #5, #6); the report is now in [`reports/`](reports/). The five PR heads Veridise confirmed (`ec54f5c`, `8c34429`, `58101d6`, `73b7a42`, `132b85f`) are merged unchanged, so each VER row's fix commit is the audited one. VER-002 closed. TM-002/TM-003 and the threat model updated for two-step rotation (Tamper.2, DoS.5, DoS.6, Elevation.1, Elevation.3, data-flow diagram, line references). The merged code was checked against each audited head: every merge step builds and passes its tests; contract test snapshots and emitted events are byte-identical to the audited VER-002/VER-003 contracts; a differential run of about 12,000 signatures (the 100 NIST KAT vectors, falcon-wasm signatures over messages up to 100 KB, and mutations) shows the merged verifier accepts exactly what VER-003 accepts restricted to the `0x39` header; the constant-time scan passes on all eight cells. |
+| 2026-10-02 | Veridise report V2 (2026-09-10) marks all five findings Fixed, each confirmed at its PR (V-FSA-VUL-001…005 ↔ VER-001…005 ↔ PRs #2, #3, #4, #5, #6); the report is now in [`reports/`](reports/). The five PR heads Veridise confirmed (`ec54f5c`, `8c34429`, `58101d6`, `73b7a42`, `132b85f`) are merged unchanged, so each VER row's fix commit is the audited one. VER-002 closed. TM-002/TM-003 and the threat model updated for two-step rotation (Tamper.2, DoS.5, DoS.6, Elevation.1, Elevation.3, data-flow diagram, line references). The merged code was checked against each audited head: every merge step builds and passes its tests; contract test snapshots and emitted events are byte-identical to the audited VER-002/VER-003 contracts; a differential run of about 12,000 signatures (the 100 NIST KAT vectors, falcon-wasm signatures over messages up to 100 KB, and mutations) shows the merged verifier accepts exactly what VER-003 accepts restricted to the `0x39` header; the constant-time scan passes on all eight cells. The READMEs, threat model, scan reports, and this log now describe the audit as complete, and code comments no longer reference the audit or its fixes. |

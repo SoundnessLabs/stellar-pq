@@ -1,4 +1,4 @@
-# Audit readiness
+# Audit
 
 This directory is the security pack for the repository's
 [Stellar SCF Soroban Security Audit Bank](https://stellar.gitbook.io/scf-handbook/supporting-programs/audit-bank/official-rules)
@@ -57,7 +57,7 @@ any signer (see [`threat-model.md`](./threat-model.md)).
 | [`scout-scan.md`](./scout-scan.md) | CoinFabrik Scout (`cargo-scout-audit 0.3.16`) scan of both Soroban contracts. The one Critical finding (S-001 — integer overflow in `__check_auth` message assembly) was remediated; the remaining flags are documented false positives (Scout's static analysis missing upstream size gates / compile-time constants). `falcon-512-core` is soroban-sdk-free so Scout cannot analyze it — the CT analyzer covers it instead. Fulfils the Audit Bank bonus "Security Tool Scanning" item. |
 | [`reports/`](./reports/) | The Veridise audit report (V2). See [Audit report](#audit-report) above. |
 | [`findings/`](./findings/) | One write-up per Veridise finding (VER-001 to VER-005): the finding as reported, the remediation, and repository notes. |
-| [`remediation-log.md`](./remediation-log.md) | Formal vulnerability registry: per-finding ID, severity, status, owner, fix commit, and reference. Includes the application-level commitment to remediate audit-firm critical / high / medium findings within 20 business days. |
+| [`remediation-log.md`](./remediation-log.md) | Formal vulnerability registry: per-finding ID, severity, status, owner, fix commit, and reference. Includes the application-level commitment to remediate audit-firm critical / high / medium findings within 20 business days, which the Veridise findings met: all five were fixed by 2026-08-27, three days after the V1 report. |
 | [`optimization-report.md`](./optimization-report.md) | Gas & performance optimization pass: per-call verification cost is **≈ 13 k CPU instructions (≈ 0.013 % of the per-tx budget), down from ≈ 397 k** after the bulk host-copy optimization; covers the NTT / branch-free-arithmetic / zero-heap / bulk-copy wins, long-message measurements (≈ 41 k at 16 KiB, ≈ 125 k at 64 KiB; the message length is uncapped and the cost grows linearly), and the contract-size reduction. All numbers reproducible. |
 | [`e2e-receipts/`](./e2e-receipts/) | Committed JSON receipts from real on-chain runs — contract id, transaction hash, and the explorer URL an auditor can click and independently verify. Indexed in [`e2e-receipts/README.md`](./e2e-receipts/README.md). |
 

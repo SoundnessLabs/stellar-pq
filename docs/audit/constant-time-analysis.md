@@ -9,6 +9,7 @@
 | Architectures | `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-gnu` |
 | Optimization levels | `-Oz` (matches release profile) and `-O3` (cross-check) |
 | Result summary | **PASSED** on every (arch, opt) cell after F-001 remediation. One informational finding identified during the initial scan was fixed in the same commit; both states are documented below for audit traceability. |
+| Re-run | 2026-10-02, after the Veridise audit, on the code with all of its fixes merged: **PASSED** on every (arch, opt) cell. |
 
 ---
 
@@ -34,8 +35,8 @@ contract execution by deterministic gas units rather than wall-clock time,
 so even a hypothetical CT violation would not produce an exploitable
 microarchitectural signal at the network layer.
 
-The constant-time review is included in the SCF Audit Bank readiness pack
-for two reasons:
+The constant-time review is part of the SCF Audit Bank audit pack for two
+reasons:
 
 1. **Defensive depth.** Falcon verifiers may be re-used outside the Soroban
    sandbox (for example, in a desktop wallet or off-chain validator) where

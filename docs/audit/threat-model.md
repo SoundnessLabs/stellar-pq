@@ -233,12 +233,15 @@ These are not gaps in the current threat model so much as future work that
 the model has surfaced:
 
 1. **Elevation.3 — key-rotation race.** Decide whether to add a `pause()`
-   admin pair. Not blocking for the audit, but worth scoping with the
-   reviewer — some firms will recommend it as standard for any
-   account-abstraction contract that supports key rotation.
+   admin pair. The Veridise audit did not raise it as a finding; its
+   report treats rotation as an operator action and recommends rotating
+   immediately after any suspected compromise. Some reviewers still
+   recommend a pause pair as standard for account-abstraction contracts
+   that support key rotation.
 2. **DoS.5 hardening.** Track gas spent per-account on failed rotation
-   calls and rate-limit at a high water mark, if the audit firm flags
-   spam as a real concern. Currently relies on economics.
+   calls and rate-limit at a high water mark, if spam becomes a real
+   concern (the Veridise audit did not flag it). Currently relies on
+   economics.
 3. **CI integration.** Wire `cargo audit`, `cargo clippy`, and the
    constant-time scan into a CI workflow so future commits cannot
    regress on these guarantees silently.
@@ -278,4 +281,5 @@ the model has surfaced:
 Re-run this exercise when (a) any storage layout changes, (b) a new
 public function is added to the smart account, (c) the Soroban SDK
 major version bumps, (d) a new accepted Falcon signature format is
-added, or (e) before any audit firm engagement.
+added, or (e) before any further audit engagement. The model was last
+refreshed after the Veridise audit (see the header table).

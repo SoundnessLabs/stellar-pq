@@ -12,11 +12,13 @@ which scopes native verification for the three NIST PQ signature schemes
 FALCON-512 is implemented today; see [Roadmap](#roadmap) for what's
 next.
 
-> **WARNING.** This code has not been audited. Do **not** use in
-> production or with real funds until a professional security audit has
-> been completed. A formal review under the
+> **Audited.** Veridise audited the three contract crates under the
 > [Stellar SCF Soroban Security Audit Bank](https://stellar.gitbook.io/scf-handbook/supporting-programs/audit-bank/official-rules)
-> is being scheduled — see the audit pack in [`docs/audit/`](./docs/audit/README.md).
+> (report V2, 2026-09-10): five findings, none high or critical, all fixed
+> in this code. The report and the audit pack are in
+> [`docs/audit/`](./docs/audit/README.md). The instances already deployed on
+> testnet and mainnet predate the fixes, so do **not** use them in
+> production or with real funds. An audit is not a guarantee of security.
 
 ## What's here
 
@@ -27,7 +29,7 @@ next.
 | [`contracts/soroban-falcon-smart-account`](./contracts/soroban-falcon-smart-account) | Soroban `CustomAccountInterface` that authorizes transactions with a Falcon-512 signature over a domain-separated payload. Supports `__constructor(falcon_pubkey)` and two-step key rotation (`propose_key` / `accept_key` / `cancel_key`): a new key only becomes active after a proof-of-possession signature by that key, so a mistyped rotation cannot brick the account. |
 | [`web-demo`](./web-demo) | Vite + React reference frontend driving the smart account — deploys, funds, and submits Falcon-signed transfers from the browser using a vendored `falcon-wasm` signer. **Out of audit scope:** frontends are user-replaceable; the contract must remain secure under any signer (see [`docs/audit/threat-model.md`](./docs/audit/threat-model.md)). |
 | [`e2e`](./e2e) | Reproducible testnet harness — produces an audit-grade JSON receipt with a real Falcon-signed transaction. See [`e2e/README.md`](./e2e/README.md). |
-| [`docs/audit`](./docs/audit/README.md) | Complete pre-audit security pack — threat model, constant-time analysis, dependency / lint / Scout scans, remediation log, optimization report, raw tool outputs, and committed e2e receipts. Indexed in [`docs/audit/README.md`](./docs/audit/README.md). |
+| [`docs/audit`](./docs/audit/README.md) | The Veridise audit report and the security pack — per-finding write-ups, threat model, constant-time analysis, dependency / lint / Scout scans, remediation log, optimization report, raw tool outputs, and committed e2e receipts. Indexed in [`docs/audit/README.md`](./docs/audit/README.md). |
 
 The verifier implements the **NIST Round-3 Falcon-512 submission** (the
 "original Falcon" design) and is validated against the 100 official
