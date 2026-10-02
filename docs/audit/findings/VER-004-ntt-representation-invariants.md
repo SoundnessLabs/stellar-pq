@@ -3,6 +3,7 @@
 | | |
 | --- | --- |
 | Finding ID | **VER-004** |
+| Report ID | **V-FSA-VUL-004** ([report V2](../reports/VAR_Stellar_260810_Soundness_Labs_Falcon_512-V2.pdf), §5.1.4) |
 | Veridise issue | **#1289** |
 | Source | Veridise audit report |
 | Pull request | [SoundnessLabs/stellar-pq#5](https://github.com/SoundnessLabs/stellar-pq/pull/5) |
@@ -10,7 +11,7 @@
 | Likelihood | Not Likely |
 | Impact | Bad |
 | Reported | 2026-08-18 |
-| Status | **Fixed** — rustdoc contracts landed 2026-08-24 (documentation-only) |
+| Status | **Fixed** — confirmed by Veridise in report V2 (2026-09-10) at [PR #5](https://github.com/SoundnessLabs/stellar-pq/pull/5), head `73b7a42`, which is merged unchanged (documentation-only) |
 | Owner | gnosed |
 | Affects | [`contracts/falcon-512-core/src/ntt.rs`](../../../contracts/falcon-512-core/src/ntt.rs) |
 | Related | **VER-005** items 7 and 8 (visibility narrowing and the `ni` constant, same file) |

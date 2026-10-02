@@ -3,13 +3,14 @@
 | | |
 | --- | --- |
 | Finding ID | **VER-003** |
+| Report ID | **V-FSA-VUL-003** ([report V2](../reports/VAR_Stellar_260810_Soundness_Labs_Falcon_512-V2.pdf), §5.1.3) |
 | Veridise issue | **#1291** |
 | Source | Veridise audit report |
 | Severity | **Low** |
 | Likelihood | Likely |
 | Impact | Bad |
 | Reported | 2026-08-19 |
-| Status | **Fixed** — remediated on this branch (pending merge to `main`; testnet/mainnet redeploy pending) |
+| Status | **Fixed** — confirmed by Veridise in report V2 (2026-09-10) at [PR #4](https://github.com/SoundnessLabs/stellar-pq/pull/4), head `58101d6`, which is merged unchanged; testnet/mainnet redeploy pending |
 | Owner | gnosed |
 | Affects | [`contracts/falcon-512-core/src/lib.rs`](../../../contracts/falcon-512-core/src/lib.rs) (constants), [`verify.rs`](../../../contracts/falcon-512-core/src/verify.rs) (`verify_512`, `decode_sig_compressed`), [`soroban-falcon-verifier/src/lib.rs`](../../../contracts/soroban-falcon-verifier/src/lib.rs), [`soroban-falcon-smart-account/src/lib.rs`](../../../contracts/soroban-falcon-smart-account/src/lib.rs) |
 | Related | **AUD-001** (padding canonicity — the 666-byte rule this finding revisits) |

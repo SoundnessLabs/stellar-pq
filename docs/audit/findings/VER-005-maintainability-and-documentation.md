@@ -3,13 +3,14 @@
 | | |
 | --- | --- |
 | Finding ID | **VER-005** |
+| Report ID | **V-FSA-VUL-005** ([report V2](../reports/VAR_Stellar_260810_Soundness_Labs_Falcon_512-V2.pdf), §5.1.5) |
 | Veridise issue | **#1290** |
 | Source | Veridise audit report |
 | Severity | **Warning** |
 | Likelihood | Not Likely |
 | Impact | Bad |
 | Reported | 2026-08-18 |
-| Status | **Fixed** — all ten items implemented 2026-08-24 (commit pending) |
+| Status | **Fixed** — confirmed by Veridise in report V2 (2026-09-10) at [PR #6](https://github.com/SoundnessLabs/stellar-pq/pull/6), head `132b85f`, which is merged unchanged |
 | Owner | gnosed |
 | Affects | [`falcon-512-core/src/verify.rs`](../../../contracts/falcon-512-core/src/verify.rs), [`falcon-512-core/src/ntt.rs`](../../../contracts/falcon-512-core/src/ntt.rs), [`falcon-512-core/src/lib.rs`](../../../contracts/falcon-512-core/src/lib.rs), [`soroban-falcon-smart-account/src/lib.rs`](../../../contracts/soroban-falcon-smart-account/src/lib.rs) |
 | Related | **VER-004** (item 7 overlaps), **VER-002** (item 10 touches the same file), **VER-001** (item 7 touches the same file) |
@@ -125,7 +126,9 @@ more maintainable and clearly documented:
 - [x] **5.** **Kept** as defense in depth, with a comment recording that
       `__constructor`/`rotate_key` are today's only writers, why the check is
       deliberately retained (future storage migration or additional writer,
-      e.g. VER-002's promote path), and its trivial cost.
+      e.g. VER-002's promote path), and its trivial cost. With VER-002
+      merged, the writers are `__constructor` and `accept_key`, and the
+      comment names those.
 - [x] **6.** `decode_pubkey` docs now state the on-failure contract: `h` is
       unspecified/partially written and MUST be discarded on `false`.
 - [x] **7.** `verify_raw_512` is now **private** with a doc comment listing
@@ -146,6 +149,14 @@ more maintainable and clearly documented:
       `data_format = "single-value"`, preserving the exact wire shape of the
       old `env.events().publish(...)` calls (topics tuple + single
       `BytesN<32>` data) so existing indexers are unaffected.
+
+      > **Note for the merged branch.** VER-002 removes `rotate_key`, so
+      > `FalconRotate` goes with it. VER-002's `propose` / `accept` /
+      > `cancel` events are emitted as `FalconPropose` / `FalconAccept` /
+      > `FalconCancel` `#[contractevent]` types with the same topics and
+      > data VER-002 published. Captured as XDR, every event the merged
+      > contract emits (init, propose, cancel, accept) is byte-identical to
+      > the audited VER-002 contract's.
 - [x] Add a **VER-005** row to [`remediation-log.md`](../remediation-log.md).
 
 ## Repository notes
@@ -158,7 +169,8 @@ accurate: `debug_assert!(v < Q)` at `verify.rs:370`, `pub fn verify_raw_512` at
 
 **Sequencing.** This branch is based directly on `main` and contains only the
 ten items above, so it can be reviewed on its own. It overlaps the other
-findings, and merging it alongside them needs care:
+findings, and merging it alongside them needs care. (All three overlaps
+below were resolved as described when the five fix PRs were merged.)
 
 - **VER-001** touches the same "Accepted signature formats" module docs and
   the header gate in `verify.rs`. This branch deliberately leaves both

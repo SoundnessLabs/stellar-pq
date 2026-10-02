@@ -3,13 +3,14 @@
 | | |
 | --- | --- |
 | Finding ID | **VER-002** |
+| Report ID | **V-FSA-VUL-002** ([report V2](../reports/VAR_Stellar_260810_Soundness_Labs_Falcon_512-V2.pdf), §5.1.2) |
 | Veridise issue | **#1288** |
 | Source | Veridise audit report |
 | Severity | **Low** |
 | Likelihood | Not Likely |
 | Impact | Protocol Breaking |
 | Reported | 2026-08-18 |
-| Status | **In progress** — remediation implemented on branch `claude/falcon-key-rotation-validation-bd4fd8`, awaiting review |
+| Status | **Fixed** — confirmed by Veridise in report V2 (2026-09-10) at [PR #3](https://github.com/SoundnessLabs/stellar-pq/pull/3), head `8c34429`, which is merged unchanged |
 | Owner | gnosed |
 | Affects | [`contracts/soroban-falcon-smart-account/src/lib.rs`](../../../contracts/soroban-falcon-smart-account/src/lib.rs) — `rotate_key` (now replaced by `propose_key` / `accept_key` / `cancel_key`) |
 | Related | **TM-002** (rotation race, Open), **TM-003** (rotation spam, Accepted), **SR-001** (auth-before-validate ordering, Fixed) |
@@ -92,9 +93,12 @@ new public key before proceeding.
       ("Key rotation (two-step)"), the module docs, the root README row, and
       `e2e/README.md`.
 - [x] Row added to [`remediation-log.md`](../remediation-log.md).
-- [ ] Revisit TM-002 with the widened two-transaction window (see notes below)
-      and refresh the threat model's `rotate_key` references (`threat-model.md`
-      still describes the one-step flow).
+- [x] Revisit TM-002 with the widened two-transaction window (see notes below)
+      and refresh the threat model's `rotate_key` references. Done when the
+      five fix PRs were merged: `threat-model.md` now models
+      `propose_key` / `accept_key` / `cancel_key` (data-flow diagram,
+      Tamper.2, DoS.5, DoS.6, Elevation.1, Elevation.3), and TM-002 stays
+      open with the two-transaction window recorded.
 
 ## Repository notes
 
@@ -116,8 +120,8 @@ current key can race a malicious transaction into the same ledger as a
 rotation. A two-step flow widens that window from one transaction to two, so
 TM-002 should get revisited alongside this rather than treated separately.
 It doesn't make TM-002 worse in substance — an attacker with the current key
-was already game over — but `threat-model.md` still describes the one-step
-`rotate_key` in Tamper.2, DoS.5, and Elevation.1/3, and needs a refresh pass.
+was already game over. `threat-model.md` has since been refreshed for the
+two-step flow (see the checklist above).
 
 Interface decision: `rotate_key` is removed, not kept as an alias. A one-step
 write-through path would preserve exactly the hazard this finding describes.

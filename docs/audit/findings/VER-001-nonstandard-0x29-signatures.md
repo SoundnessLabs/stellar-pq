@@ -3,22 +3,21 @@
 | | |
 | --- | --- |
 | Finding ID | **VER-001** |
+| Report ID | **V-FSA-VUL-001** ([report V2](../reports/VAR_Stellar_260810_Soundness_Labs_Falcon_512-V2.pdf), §5.1.1) |
 | Veridise issue | **#1292** |
 | Source | Veridise audit report |
 | Severity | **Medium** |
 | Likelihood | Likely |
 | Impact | Bad |
 | Reported | 2026-08-19 |
-| Status | **Fixed** — remediated on `claude/falcon-signature-headers-9xo65t` (pending merge to `main`) |
+| Status | **Fixed** — confirmed by Veridise in report V2 (2026-09-10) at [PR #2](https://github.com/SoundnessLabs/stellar-pq/pull/2), head `ec54f5c`, which is merged unchanged |
 | Owner | gnosed |
 | Affects | [`contracts/falcon-512-core/src/verify.rs`](../../../contracts/falcon-512-core/src/verify.rs) (header gate + module docs), verifier and smart-account `tests/kat.rs` |
 | Supersedes | **AUD-002** (previously closed as _Accepted — required for interop_; see note below) |
 | Related | **AUD-003** (format comments corrected), **AUD-001** (padding canonicity) |
 
-> **Tracking stub.** This document records the finding and the agreed
-> remediation. No code change landed in the PR that introduced it (PR #2);
-> the fix branch this document was merged into implements the full
-> remediation below.
+> This document records the finding, the agreed remediation, and the fix,
+> which landed in PR #2 itself (the PR started as this tracking stub).
 
 ## Finding as reported
 

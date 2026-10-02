@@ -51,7 +51,7 @@ proof, not that it is the key you *meant* to install.
 | Parameter | Size | Description |
 |-----------|------|-------------|
 | `falcon_pubkey` | 897 bytes | Falcon-512 public key |
-| `signature` | 42-700 bytes | Falcon signature (typically ~666 bytes) |
+| `signature` | 617-752 bytes | Falcon-512 signature with header `0x39`: compressed (variable length, typically ~655 bytes) or padded (exactly 666 bytes) |
 
 ## Usage
 
