@@ -64,8 +64,8 @@ All raised warnings are stylistic / refactor suggestions:
   `!(MIN..=MAX).contains(&len)`. The explicit form is arguably clearer
   for size validation in security-sensitive entry points; keeping as-is.
 
-The `needless_range_loop` style choice should be documented in
-`CLAUDE.md` (or equivalent) so a future reviewer does not raise it as a
+The `needless_range_loop` style choice should be documented in the
+contributor guidelines so a future reviewer does not raise it as a
 finding (the Veridise audit did not). Suggested follow-up: add a `#[allow(...)]`
 crate-level attribute with a rationale comment, or drop the lint via
 `clippy.toml`.
